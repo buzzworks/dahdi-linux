@@ -1,0 +1,59 @@
+Source: dahdi-linux
+Section: comm
+Priority: optional
+Maintainer: Arvind Singh <arvind@buzzworks.com>
+Build-Depends: debhelper (>= 9), dkms, wget
+Standards-Version: 3.9.4
+Homepage: http://www.asterisk.org
+Vcs-Git: git://github.com/buzzworks/dahdi-linux.git
+Vcs-Browser: http://github.com/buzzworks/dahdi-linux
+
+Package: dahdi-linux
+Architecture: all
+Depends: ${misc:Depends}, ${perl:Depends}, dahdi-dkms, procps, fxload
+Replaces: zaptel
+Conflicts: zaptel
+Description: userspace parts for DAHDI telephony interface
+ This package provides minimal Linux-specific userspace parts:
+ udev configuration, xpp initialization scripts for DAHDI
+ telephony interface.
+
+Package: dahdi-dkms
+Section: devel
+Architecture: all
+Depends: ${misc:Depends}, ${perl:Depends}
+Recommends: dahdi-linux
+Description: DKMS kernel driver for DAHDI telephony interface
+ The dkms package will automatically compile DAHDI telephony interface
+ driver for your current kernel version.
+
+Package: dahdi-firmware-nonfree
+Replaces: zaptel-firmware
+Conflicts: zaptel-firmware
+Architecture: all
+Depends: ${misc:Depends}
+Description: Firmwares for DAHDI telephony interface
+ This package includes following firmwares:
+    allo-dahdi-fw-2aCP2.bin
+    allo-dahdi-fw-2aCP2e.bin
+    allo-dahdi-fw-2aCP4.bin
+    allo-dahdi-fw-2aCP4e.bin
+    allo-dahdi-fw-2aCP8e.bin
+    dahdi-fw-a4a.bin
+    dahdi-fw-a4b.bin
+    dahdi-fw-a8a.bin
+    dahdi-fw-a8b.bin
+    dahdi-fw-hx8.bin
+    dahdi-fw-oct6114-032.bin
+    dahdi-fw-oct6114-064.bin
+    dahdi-fw-oct6114-128.bin
+    dahdi-fw-oct6114-256.bin
+    dahdi-fw-pciradio.bin
+    dahdi-fw-tc400m.bin
+    dahdi-fw-te133.bin
+    dahdi-fw-te134.bin
+    dahdi-fw-te435.bin
+    dahdi-fw-te436.bin
+    dahdi-fw-te820.bin
+    dahdi-fw-tor2.bin
+    dahdi-fw-vpmoct032.bin

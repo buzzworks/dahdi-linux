@@ -1,0 +1,5 @@
+dahdi-linux (2:2.10.0.1-1) UNRELEASED; urgency=low
+
+  * Initial release (Closes: #639702)
+
+ -- Arvind Singh <arvind@buzzworks.com>  Tue, 07 Oct 2014 17:39:46 +0530

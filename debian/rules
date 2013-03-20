@@ -1,0 +1,38 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+export DH_VERBOSE=1
+
+
+TOPDIR=$(shell pwd)
+MODULE_VERSION=$(shell dpkg-parsechangelog | grep '^Version:' | cut -d' ' -f2 | cut -d\: -f2)
+
+
+%:
+	dh $@ --with dkms
+
+
+override_dh_auto_configure:
+	sed -e "s|#MODULE_VERSION#|$(MODULE_VERSION)|" \
+		debian/dahdi-dkms.install.in > debian/dahdi-dkms.install
+
+override_dh_auto_build:
+	make DESTDIR=$(TOPDIR)/debian/tmp prereq
+
+override_dh_auto_install:
+	make DESTDIR=$(TOPDIR)/debian/tmp install-include
+	make DESTDIR=$(TOPDIR)/debian/tmp install-firmware
+	make DESTDIR=$(TOPDIR)/debian/tmp install-xpp-firm
+	dh_install
+
+override_dh_auto_test:
+
+override_dh_dkms:
+	dh_dkms -V $(MODULE_VERSION)
+
+override_dh_installudev:
+	dh_installudev --name=dahdi
+
+override_dh_auto_clean:
+	rm -f	debian/dahdi-dkms.install
+	dh_auto_clean

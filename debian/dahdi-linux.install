@@ -1,0 +1,6 @@
+debian/modules                  etc/dahdi
+debian/system.conf              etc/dahdi
+drivers/dahdi/xpp/xpp.conf      etc/dahdi
+usr/include/dahdi/*.h
+usr/share/dahdi/*.pm
+usr/share/dahdi/init_card_*

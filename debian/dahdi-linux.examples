@@ -1,0 +1,3 @@
+debian/make_static_nodes
+debian/system.conf
+drivers/dahdi/xpp/xpp.conf

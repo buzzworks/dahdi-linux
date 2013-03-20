@@ -1,0 +1,5 @@
+.version        usr/src/dahdi-#MODULE_VERSION#
+Makefile        usr/src/dahdi-#MODULE_VERSION#
+build_tools     usr/src/dahdi-#MODULE_VERSION#
+drivers         usr/src/dahdi-#MODULE_VERSION#
+include         usr/src/dahdi-#MODULE_VERSION#

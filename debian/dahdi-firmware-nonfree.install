@@ -1,0 +1,4 @@
+debian/firmware/*.bin           lib/firmware
+lib/firmware/*.bin
+usr/lib/hotplug/firmware/*.bin
+usr/share/dahdi/*.hex
