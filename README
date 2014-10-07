@@ -163,6 +163,24 @@ to the script:
   ./build_tools/make_static_devs -d tmp/newroot/dev/dahdi
 
 
+DKMS
+~~~~
+DKMS, Dynamic Kernel Module Support, is a framework for building Linux
+kernel modules. It is used, among others, by several distributions that
+package the DAHDI kernel modules.
+
+DKMS is designed to provide updates over drivers installed from original
+kernel modules tree. Thus it installed modules into /lib/modules/updates
+or /lib/modules/VERSION/updates . This is generally not an issue on
+normal operation. However if you try to install DAHDI from source on
+a system with DAHDI installed from DKMS this way (potentially of an
+older version), be sure to remove the DKMS-installed modules from the
+updates directory. If you're not sure, the following command will give
+you a clue of the versions installed:
+
+  find /lib/modules -name dahdi.ko
+
+
 Installing the B410P drivers with mISDN
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 DAHDI includes the wcb4xxp driver for the B410P, however, support for the
@@ -229,6 +247,15 @@ As this is an experimental driver, problems building and using it should
 be reported on the 
 https://lists.sourceforge.net/lists/listinfo/freetel-oslec[OSLEC mailing
 list].
+
+Alternatively you can also get the OSLEC code from the dahdi-linux-extra
+GIT repository:
+
+  git clone git://gitorious.org/dahdi-extra/dahdi-linux-extra.git
+  cd dahdi-linux-extra
+  git archive extra-2.6 drivers/staging | (cd ..; tar xf -)
+  cd ..; rm -rf dahdi-linux-extra
+
 
 Live Install
 ~~~~~~~~~~~~
@@ -418,54 +445,17 @@ reside directly under /sys/module/'module_name' .
 
 Useful module parameters:
 
-debug (most modules)::
-  Sets debug mode / debug level. With most modules 'debug' can be either
-  disabled (0, the default value) or enabled (any other value). 
-  +
-  +
-  wctdm and wcte1xp print several extra debugging messages if the value
-  of debug is more than 1.
-  +
-  +
-  Some modules have "debugging flags" bits - the value of debug is a
-  bitmask and several messages are printed if some bits are set:
-  - wctdm24xxp:
-    * 1: DEBUG_CARD
-    * 2: DEBUG_ECHOCAN
-  - wct4xxp:
-    * 1: DEBUG_MAIN
-    * 2: DEBUG_DTMF
-    * 4: DEBUG_REGS
-    * 8: DEBUG_TSI
-    * 16: DEBUG_ECHOCAN
-    * 32: DEBUG_RBS
-    * 64: DEBUG_FRAMER
-  - xpp: See also README.Astribank:
-    * 1: GENERAL - General debug comments.
-    * 2: PCM - PCM-related messages. Tend to flood logs.
-    * 4: LEDS - Anything related to the LEDs status control. The driver
-      produces a lot of messages when the option is enabled.
-    * 8: SYNC - Synchronization related messages.
-    * 16: SIGNAL - DAHDI signalling related messages.
-    * 32: PROC - Messages related to the procfs interface.
-    * 64: REGS - Reading and writing to chip registers. Tends to flood
-          logs.
-    * 128: DEVICES - Device instantiation, destruction and such.
-    * 256 - COMMANDS - Protocol commands. Tends to flood logs.
+=== debug
+(most modules)
 
-deftaps (dahdi)::
-  The default size for the echo canceller. The number is in "taps", that
-  is "samples", 1/8 ms. The default is 64 - for a tail size of 8 ms.
-  +
-  +
-  Asterisk's chan_dahdi tends to pass its own value anyway, with a
-  different default size. So normally setting this doesn't change
-  anything.
+Sets debug mode / debug level. With most modules 'debug' can be either
+disabled (0, the default value) or enabled (any other value). 
 
-max_pseudo_channels (dahdi)::
-  The maximum number of pseudo channels that dahdi will allow userspace to
-  create.  Pseudo channels are used when conferencing channels together.
-  The default is 512.
+wctdm and wcte1xp print several extra debugging messages if the value
+of debug is more than 1.
+
+Some modules have "debugging flags" bits - the value of debug is a
+bitmask and several messages are printed if some bits are set:
 
 To get a list of parameters supported by a module, use 
 
@@ -473,11 +463,186 @@ To get a list of parameters supported by a module, use
 
 Or, for a module you have just built:
 
-  modinfo ./module_name.ko
+  modinfo ./drivers/dahdi/module_name.ko
 
 For the xpp modules this will also include the description and default
 value of the module. You can find a list of useful xpp module parameters
 in README.Astribank .
+
+
+- wctdm24xxp:
+  * 1: DEBUG_CARD
+  * 2: DEBUG_ECHOCAN
+- wct4xxp:
+  * 1: DEBUG_MAIN
+  * 2: DEBUG_DTMF
+  * 4: DEBUG_REGS
+  * 8: DEBUG_TSI
+  * 16: DEBUG_ECHOCAN
+  * 32: DEBUG_RBS
+  * 64: DEBUG_FRAMER
+- xpp: See also README.Astribank:
+  * 1: GENERAL - General debug comments.
+  * 2: PCM - PCM-related messages. Tend to flood logs.
+  * 4: LEDS - Anything related to the LEDs status control. The driver
+    produces a lot of messages when the option is enabled.
+  * 8: SYNC - Synchronization related messages.
+  * 16: SIGNAL - DAHDI signalling related messages.
+  * 32: PROC - Messages related to the procfs interface.
+  * 64: REGS - Reading and writing to chip registers. Tends to flood
+        logs.
+  * 128: DEVICES - Device instantiation, destruction and such.
+  * 256 - COMMANDS - Protocol commands. Tends to flood logs.
+  +
+  +
+  The script xpp_debug in the source tree can help settting them at run
+  time.
+
+=== deftaps
+(dahdi)
+
+The default size for the echo canceller. The number is in "taps", that
+is "samples", 1/8 ms. The default is 64 - for a tail size of 8 ms.
+
+Asterisk's chan_dahdi tends to pass its own value anyway, with a
+different default size. So normally setting this doesn't change
+anything.
+
+=== max_pseudo_channels
+(dahdi)
+
+The maximum number of pseudo channels that dahdi will allow userspace to
+create.  Pseudo channels are used when conferencing channels together.
+The default is 512.
+
+=== auto_assign_spans
+(dahdi)
+
+See <<_span_assignments,Span Assignments>> below.
+
+XPP (Astribank) module parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+==== debug
+(all modules) - see above.
+
+==== dahdi_autoreg
+(xpp)
+
+Deprecated. See dahdi.<<_auto_assign_spans,auto_assign_spans>> above.
+
+Originally had a somewhat similar (but xpp-specific and more limited)
+role to auto_assign_spans. For backward compatibility this variable is
+still kept, but its value is unused. Astribanks will auto-register
+with dahdi if auto_assign_spans is not set.
+
+==== tools_rootdir
+(xpp)
+
+Defaults to /. Passed (as the variable DAHDI_TOOLS_ROOTDIR) to generated
+events (which can be used in udev hooks). Also serves as the base of
+the variable DAHDI_INIT_DIR (by default: $DAHDI_TOOLS_DIR/usr/share/dahdi).
+
+==== initdir
+(xpp)
+
+Deprecated. Setting both initdir and tools_rootdir will generate an error.
+
+A directory under tools_rootdir containing the initialization scripts.
+The default is /usr/share/dahdi .
+Setting this value could be useful if that location is inconvenient for you.
+
+==== rx_tasklet
+(xpp)
+
+Enable (1) or disable (0) doing most of the packets processing in
+separate tasklets. This should probably help on higher-end systems with
+multiple Astribanks.
+
+==== vmwi_ioctl
+(xpd_fxs)
+
+Does userspace support VMWI notification via ioctl? Default: 1 (yes).
+
+Disable this (0) to have the driver attempt to detect the voicemail
+message waiting indication status for this port from FSK messages
+userspace (Asterisk) sends. Set the ports to use AC neon-lamp style
+message waiting indication. The detection from the FSK messages takes
+extra CPU cycles but is required with e.g. Asterisk < 1.6.0 .
+
+Also note that in order for this parameter to take effect, it must be
+set before the span is registered. This practically means that it
+should be set through modprobe.d files.
+
+See also Voicemail Indication in README.Astribank.
+
+==== usb1
+(xpp_usb)
+
+Enable (1) or disable (0) support of USB1 devices. Disabled by default.
+
+USB1 devices are not well-tested. It seems that they don't work at all
+for Astribank BRI. Generally they should work with the current code, but
+we expect the voice quality issues. Hence we would like to make it
+very clear that you if you have a USB1 port (rather than a USB2 one, as
+recommended) you will have to take an action to enable the device.
+
+==== poll intervals
+(various)
+
+There are various values which the driver occasionally polls the
+device for. For instance, the parameter poll_battery_interval for
+xpd_fxo to poll the battery, in order to know if the telco line is
+actually connected.
+
+The value of those parameters is typically a number in milliseconds.
+0 is used to disable polling. Under normal operation there should be
+no reason to play with those parameters.
+
+==== dtmf_detection
+(xpd_fxs)
+
+Enable (1) or disable (0) support of hardware DTMF detection by the
+Astribank.
+
+==== caller_id_style
+(xpd_fxo)
+
+Various types of caller ID signalling styles require knowing the PCM
+even when the line is on-hook (which is usually a waste of CPU and
+bandwidth). This parameter allows fine-tuning the behaviour here:
+
+* 0 (default) - Don't pass extra PCM when on-hook.
+* 1 ETSI-FSK: Wait for polarity reversal to come before a ring and
+  then start passing PCM until the caller ID has been passed.
+* 2 ETSI-DTMF: Always pass PCM and generate a DTMF if polarity reversal is
+  detected before ring.
+* 3 Passthrough: Always pass PCM as-is.
+
+This parameter is read-only. It cannot be changed at run-time.
+
+==== battery_threshold
+(xpd_fxo)
+
+Minimum voltage that shows there is battery. Defaults to 3. Normally you
+should not need to change this, unless dealing with a funky PSTN
+provider.
+
+==== battery_debounce
+(xpd_fxo)
+
+Minimum interval (msec) for detection of battery off (as opposed to e.g.
+a temporary power denial to signal a hangup). Defaults to 1000. As with
+battery_threshold above, there's normally no need to tweak it.
+
+==== use_polrev_firmware
+(xpd_fxo)
+
+Enable (1, default) or disable (0) support for polarity reversal
+detection in the hardware. Only has effect with PIC_TYPE_2.hex rev. >=
+11039 and with the initialization changes (init_card_2_30) in rev.
+949aa49.
+
+This parameter is read-only. It cannot be changed at run-time.
 
 
 Internals
@@ -491,9 +656,14 @@ or dynamically through the udev system.
 
 * /dev/dahdi/ctl (196:0) - a general device file for various information and
   control operations on the DAHDI channels.
+* /dev/dahdi/chan/N/M - A device file for channel M in span N
+  - Both N and M are zero padded 3 digit numbers
+  - Both N and M start at 001
+  - M is chanpos - numbering relative to the current span.
 * /dev/dahdi/NNN (196:NNN) - for NNN in the range 1-249. A device file for
   DAHDI channel NNN. It can be used to read data from the channel
-  and write data to the channel.
+  and write data to the channel. It is not generated by default but may
+  be generated as a symlink using udev rules.
 * /dev/dahdi/transcode (196:250) - Used to connect to a DAHDI transcoding
   device.
 * /dev/dahdi/timer (196:253) - Allows setting timers. Used anywhere?
@@ -727,11 +897,12 @@ to other nodes.
 
 Class DAHDI
 ^^^^^^^^^^^
-under /sys/class/dadhi there exists a node for each DAHDI device file
-under /dev/dahdi. The name is 'dahdi!foo' for the file '/dev/dahdi/foo'
-(udev translates exclamation marks to slashes). Those nodes are not, for
-the most part, proper SysFS nodes, and don't include any interesting
-properties.
+Under /sys/class/dadhi there exists a node for the non-channel DAHDI
+device file under /dev/dahdi. The name is 'dahdi!foo' for the file
+'/dev/dahdi/foo' (udev translates exclamation marks to slashes). Those
+nodes are not, for the most part, proper SysFS nodes, and don't include
+any interesting properties. The files in this class `ctl`, `timer`,
+`channel`, `pseudo` and (if exists) `transcode`.
 
 
 Devices Bus
@@ -755,6 +926,10 @@ A unique hardware-level identifier (e.g. serial number), if available.
 
 ===== /sys/bus/dahdi_devices/devices/DEVICE/manufacturer
 The name of the manufacturer. Freeform-string.
+
+===== /sys/bus/dahdi_devices/devices/DEVICE/registration_time
+The time at which the device registered with the DAHDI core. Example
+value: "0005634136.941901429".
 
 ===== /sys/bus/dahdi_devices/devices/DEVICE/spantype
 A line for each available span: <num>:<type>. This has to be provided
@@ -802,6 +977,12 @@ A free-form description of the span.
 ===== /sys/bus/dahdi_spans/devices/span-N/lbo
 LBO setting for the channel.
 
+===== /sys/bus/dahdi_spans/devices/span-N/lineconfig
+The framing and coding of the span, for a digital span. Textual
+represenation:
+
+<B8ZS|AMI|HDB3>/<D4|ESF|CCS>[/CRC4]
+
 ===== /sys/bus/dahdi_spans/devices/span-N/local_spanno
 The number of the span within the DAHDI device.
 
@@ -813,6 +994,66 @@ A very short type string.
 
 ===== /sys/bus/dahdi_spans/devices/span-N/syncsrc
 Current sync source.
+
+==== sys/bus/dahdi_spans/drivers/generic_lowlevel/master_span
+All spans in the bus are handled by a single driver. The driver has one
+non-standard attribute: master_span. printing it shows the current DAHDI
+master span writing a number to it forces setting this span as the master
+span.
+
+
+Channels Bus
+^^^^^^^^^^^^
+Each DAHDI channel is represented by a node under
+/sys/bus/dahdi_channels/devices with the name 'dahdi!channels!N!M'
+(where N is the number of the span and M is the number of the channel
+in the span - chanpos). Channels of each span also reside under the node
+of the span.
+
+Useful attributes in the channel node (All attributed listed below are
+read-only):
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/alarms
+List of names of the current active alarms (space separated). Normally
+(no alarms) empty. Example:
+
+  RED YELLOW
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/blocksize
+The block size set by userspace.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/channo
+The (global) channel number.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/chanpos
+The channel number within the span.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/dev
+Major and minor device numbers.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/ec_factory
+The name of the echo canceller to be used in the channel, if one is
+configured. Example:
+
+  MG2
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/ec_state
+State of the echo canceller. ACTIVE: configured and inuse. INACTIVE
+otherwise.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/in_use
+1 if the channel is in use (was opepend by userspace), 0 otherwise.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/name
+A name string for the channel
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/sig
+The signalling types set for the channel. A space-separated list of
+signalling types.
+
+===== /sys/bus/dahdi_spans/devices/span-N/dahdi!channels!N!M/sigcap
+The signalling types this channel may be configured to handle. A space-
+separated list of signalling types.
 
 
 User-space Interface

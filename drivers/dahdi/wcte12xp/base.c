@@ -8,7 +8,7 @@
  *            Matthew Fredrickson <creslin@digium.com>
  *            William Meadows <wmeadows@digium.com>
  *
- * Copyright (C) 2007-2011, Digium, Inc.
+ * Copyright (C) 2007-2012, Digium, Inc.
  *
  * All rights reserved.
  *
@@ -40,6 +40,7 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 
 #include <stdbool.h>
 #include <dahdi/kernel.h>
@@ -658,6 +659,17 @@ static int __t1_getresult(struct t1 *wc, struct command *cmd)
 
 	might_sleep();
 
+	if (test_bit(IOERROR, &wc->bit_flags)) {
+		spin_lock_irqsave(&wc->reglock, flags);
+		list_del_init(&cmd->node);
+		spin_unlock_irqrestore(&wc->reglock, flags);
+		if (printk_ratelimit()) {
+			dev_warn(&wc->vb.pdev->dev,
+				 "Timeout in %s\n", __func__);
+		}
+		return -EIO;
+	}
+
 	ret = wait_for_completion_interruptible_timeout(&cmd->complete, HZ*10);
 	if (unlikely(!ret)) {
 		spin_lock_irqsave(&wc->reglock, flags);
@@ -666,13 +678,13 @@ static int __t1_getresult(struct t1 *wc, struct command *cmd)
 			 * can go ahead and free it right away. */
 			list_del_init(&cmd->node);
 			spin_unlock_irqrestore(&wc->reglock, flags);
-			free_cmd(wc, cmd);
 			if (-ERESTARTSYS != ret) {
 				if (printk_ratelimit()) {
 					dev_warn(&wc->vb.pdev->dev,
 						 "Timeout in %s\n", __func__);
 				}
 				ret = -EIO;
+				set_bit(IOERROR, &wc->bit_flags);
 			}
 			return ret;
 		} else {
@@ -683,7 +695,6 @@ static int __t1_getresult(struct t1 *wc, struct command *cmd)
 			ret = wait_for_completion_timeout(&cmd->complete, HZ*2);
 			WARN_ON(!ret);
 			ret = cmd->data;
-			free_cmd(wc, cmd);
 			return ret;
 		}
 	}
@@ -841,6 +852,75 @@ static void free_wc(struct t1 *wc)
 	kfree(wc);
 }
 
+/**
+ * t1_reset_registers - Put register back to their default values 
+ *
+ * Since the card does not have an ability to reset just the framer
+ * specifically, we need to write all the default values to the framer.
+ *
+ */
+static void t1_reset_registers(struct t1 *wc)
+{
+	int i;
+	struct t1_reg {
+		u8 address;
+		u8 value;
+	} __attribute__((packed));
+	struct t1_reg *reg;
+	static struct t1_reg DEFAULT_REGS[] = {
+		{0x00, 0x7d}, {0x01, 0x7d}, {0x02, 0x00}, {0x03, 0x00},
+		{0x04, 0xfd}, {0x05, 0xff}, {0x06, 0xff}, {0x07, 0xff},
+		{0x08, 0x05}, {0x09, 0x00}, {0x0a, 0x00}, {0x0b, 0x00},
+		{0x0c, 0x00}, {0x0d, 0x00}, {0x0e, 0x00}, {0x0f, 0x00},
+		{0x10, 0x00}, {0x11, 0x00}, {0x12, 0x00}, {0x13, 0x00},
+		{0x14, 0xff}, {0x15, 0xff}, {0x16, 0xff}, {0x17, 0xff},
+		{0x18, 0xff}, {0x19, 0xff}, {0x1a, 0x00}, {0x1b, 0x00},
+		{0x1c, 0x00}, {0x1d, 0x00}, {0x1e, 0x00}, {0x1f, 0x00},
+		{0x20, 0x00}, {0x21, 0x00}, {0x22, 0x00}, {0x23, 0x04},
+		{0x24, 0x00}, {0x25, 0x05}, {0x26, 0x7b}, {0x27, 0x03},
+		{0x28, 0x40}, {0x29, 0x00}, {0x2a, 0x00}, {0x2b, 0x00},
+		{0x2c, 0x00}, {0x2d, 0x00}, {0x2e, 0x00}, {0x2f, 0x00},
+		{0x30, 0x00}, {0x31, 0x00}, {0x32, 0x00}, {0x33, 0x00},
+		{0x34, 0x00}, {0x35, 0x00}, {0x36, 0x00}, {0x37, 0x80},
+		{0x38, 0x00}, {0x39, 0x00}, {0x3a, 0x20}, {0x3b, 0x00},
+		{0x3c, 0x00}, {0x3d, 0x00}, {0x3e, 0x0a}, {0x3f, 0x00},
+		{0x40, 0x04}, {0x41, 0x00}, {0x42, 0x00}, {0x43, 0x00},
+		{0x44, 0x30}, {0x45, 0x00}, {0x46, 0xc0}, {0x47, 0xff},
+		{0x48, 0x00}, {0x49, 0x1c}, {0x4a, 0x05}, {0x4b, 0x03},
+		{0x4c, 0xa3}, {0x4d, 0x28}, {0x4e, 0x00}, {0x4f, 0xc0},
+		{0x50, 0x00}, {0x51, 0x00}, {0x52, 0x00}, {0x53, 0x00},
+		{0x54, 0x00}, {0x55, 0x00}, {0x56, 0x00}, {0x57, 0x00},
+		{0x58, 0x00}, {0x59, 0x00}, {0x5a, 0x00}, {0x5b, 0x00},
+		{0x5c, 0x00}, {0x5d, 0x00}, {0x5e, 0x00}, {0x5f, 0x00},
+		{0x60, 0x00}, {0x61, 0x20}, {0x62, 0x00}, {0x63, 0x00},
+		{0x64, 0x5a}, {0x65, 0x02}, {0x66, 0x00}, {0x67, 0x00},
+		{0x68, 0x10}, {0x69, 0x09}, {0x6a, 0x00}, {0x6b, 0x03},
+		{0x6c, 0x00}, {0x6d, 0xc0}, {0x6e, 0x40}, {0x6f, 0x00},
+		{0x70, 0x00}, {0x71, 0x00}, {0x72, 0x00}, {0x73, 0x00},
+		{0x74, 0x00}, {0x75, 0x00}, {0x76, 0x00}, {0x77, 0x00},
+		{0x78, 0x00}, {0x79, 0x00}, {0x7a, 0x00}, {0x7b, 0x00},
+		{0x7c, 0x00}, {0x7d, 0x00}, {0x7e, 0x00}, {0x7f, 0x00},
+		{0x80, 0x00}, {0x81, 0x22}, {0x82, 0x65}, {0x83, 0x35},
+		{0x84, 0x31}, {0x85, 0x60}, {0x86, 0x03}, {0x87, 0x00},
+		{0x88, 0x00}, {0x89, 0x00}, {0x8a, 0x00}, {0x8b, 0x00},
+		{0x8c, 0x00}, {0x8d, 0x00}, {0x8e, 0x00}, {0x8f, 0x00},
+		{0x90, 0x00}, {0x91, 0x00}, {0x92, 0x00}, {0x93, 0x18},
+		{0x94, 0xfb}, {0x95, 0x0b}, {0x96, 0x00}, {0x97, 0x0b},
+		{0x98, 0xdb}, {0x99, 0xdf}, {0x9a, 0x48}, {0x9b, 0x00},
+		{0x9c, 0x3f}, {0x9d, 0x3f}, {0x9e, 0x77}, {0x9f, 0x77},
+		{0xa0, 0x00}, {0xa1, 0xff}, {0xa2, 0xff}, {0xa3, 0xff},
+		{0xa4, 0x00}, {0xa5, 0x00}, {0xa6, 0x00}, {0xa7, 0x00},
+		{0xa8, 0x00}
+	};
+
+	for (i = 0; i < ARRAY_SIZE(DEFAULT_REGS); ++i) {
+		reg = &DEFAULT_REGS[i];
+		t1_setreg(wc, reg->address, reg->value);
+	}
+	/* Flush previous writes. */
+	t1_getreg(wc, 0x1d);
+}
+
 static void t4_serial_setup(struct t1 *wc)
 {
 	t1_setreg(wc, 0x85, 0xe0);	/* GPC1: Multiplex mode enabled, FSC is output, active low, RCLK from channel 0 */
@@ -894,7 +974,7 @@ static void t1_configure_t1(struct t1 *wc, int lineconfig, int txlevel)
 	fmr2 = 0x20; /* FMR2: no payload loopback, don't auto yellow alarm */
 
 
-	if (!strcasecmp("j1", wc->span.spantype))
+	if (SPANTYPE_DIGITAL_J1 == wc->span.spantype)
 		fmr4 = 0x1c;
 	else
 		fmr4 = 0x0c; /* FMR4: Lose sync on 2 out of 5 framing bits, auto resync */
@@ -934,7 +1014,7 @@ static void t1_configure_t1(struct t1 *wc, int lineconfig, int txlevel)
 	t1_setreg(wc, 0x38, 0x0a);	/* PCD: LOS after 176 consecutive "zeros" */
 	t1_setreg(wc, 0x39, 0x15);	/* PCR: 22 "ones" clear LOS */
 
-	if (!strcasecmp("j1", wc->span.spantype))
+	if (SPANTYPE_DIGITAL_J1 == wc->span.spantype)
 		t1_setreg(wc, 0x24, 0x80); /* J1 overide */
 		
 	/* Generate pulse mask for T1 */
@@ -1948,21 +2028,21 @@ static int t1_software_init(struct t1 *wc, enum linemode type)
 	switch (type) {
 	case E1:
 		wc->span.channels = 31;
-		wc->span.spantype = "E1";
+		wc->span.spantype = SPANTYPE_DIGITAL_E1;
 		wc->span.linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_HDB3 |
 			DAHDI_CONFIG_CCS | DAHDI_CONFIG_CRC4;
 		wc->span.deflaw = DAHDI_LAW_ALAW;
 		break;
 	case T1:
 		wc->span.channels = 24;
-		wc->span.spantype = "T1";
+		wc->span.spantype = SPANTYPE_DIGITAL_T1;
 		wc->span.linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS |
 			DAHDI_CONFIG_D4 | DAHDI_CONFIG_ESF;
 		wc->span.deflaw = DAHDI_LAW_MULAW;
 		break;
 	case J1:
 		wc->span.channels = 24;
-		wc->span.spantype = "J1";
+		wc->span.spantype = SPANTYPE_DIGITAL_J1;
 		wc->span.linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS |
 			DAHDI_CONFIG_D4 | DAHDI_CONFIG_ESF;
 		wc->span.deflaw = DAHDI_LAW_MULAW;
@@ -1979,7 +2059,7 @@ static int t1_software_init(struct t1 *wc, enum linemode type)
 		return -ENOMEM;
 
 	t1_info(wc, "Setting up global serial parameters for %s\n",
-		wc->span.spantype);
+		dahdi_spantype2str(wc->span.spantype));
 
 	t4_serial_setup(wc);
 	set_bit(DAHDI_FLAGBIT_RBS, &wc->span.flags);
@@ -2013,13 +2093,13 @@ error_exit:
  * DAHDI).
  *
  */
-static int t1xxp_set_linemode(struct dahdi_span *span, const char *linemode)
+static int t1xxp_set_linemode(struct dahdi_span *span, enum spantypes linemode)
 {
 	int res;
 	struct t1 *wc = container_of(span, struct t1, span);
 
 	/* We may already be set to the requested type. */
-	if (!strcasecmp(span->spantype, linemode))
+	if (span->spantype == linemode)
 		return 0;
 
 	res = t1_wait_for_ready(wc);
@@ -2029,28 +2109,35 @@ static int t1xxp_set_linemode(struct dahdi_span *span, const char *linemode)
 	/* Stop the processing of the channels since we're going to change
 	 * them. */
 	clear_bit(INITIALIZED, &wc->bit_flags);
+	synchronize_irq(wc->vb.pdev->irq);
 	smp_mb__after_clear_bit();
 	del_timer_sync(&wc->timer);
 	flush_workqueue(wc->wq);
 
-	if (!strcasecmp(linemode, "t1")) {
+	t1_reset_registers(wc);
+
+	switch (linemode) {
+	case SPANTYPE_DIGITAL_T1:
 		dev_info(&wc->vb.pdev->dev,
 			 "Changing from %s to T1 line mode.\n",
-			 wc->span.spantype);
+			 dahdi_spantype2str(wc->span.spantype));
 		res = t1_software_init(wc, T1);
-	} else if (!strcasecmp(linemode, "e1")) {
+		break;
+	case SPANTYPE_DIGITAL_E1:
 		dev_info(&wc->vb.pdev->dev,
 			 "Changing from %s to E1 line mode.\n",
-			 wc->span.spantype);
+			 dahdi_spantype2str(wc->span.spantype));
 		res = t1_software_init(wc, E1);
-	} else if (!strcasecmp(linemode, "j1")) {
+		break;
+	case SPANTYPE_DIGITAL_J1:
 		dev_info(&wc->vb.pdev->dev,
 			 "Changing from %s to E1 line mode.\n",
-			 wc->span.spantype);
+			 dahdi_spantype2str(wc->span.spantype));
 		res = t1_software_init(wc, J1);
-	} else {
+	default:
 		dev_err(&wc->vb.pdev->dev,
-			"'%s' is an unknown linemode.\n", linemode);
+			"Got invalid linemode '%s' from dahdi\n",
+			dahdi_spantype2str(linemode));
 		res = -EINVAL;
 	}
 
@@ -2202,27 +2289,32 @@ static void t1_check_alarms(struct t1 *wc)
 		/* Detect loopup code if we're not sending one */
 		if ((!wc->span.mainttimer) && (d & 0x08)) {
 			/* Loop-up code detected */
-			if ((wc->span.maintstat != DAHDI_MAINT_REMOTELOOP)) {
+			if ((++wc->loopupcnt > 80) &&
+			    (wc->span.maintstat != DAHDI_MAINT_REMOTELOOP)) {
 				t1_notice(wc, "Loopup detected,"\
 					" enabling remote loop\n");
 				t1_setreg(wc, 0x36, 0x08);	/* LIM0: Disable any local loop */
 				t1_setreg(wc, 0x37, 0xf6);	/* LIM1: Enable remote loop */
 				wc->span.maintstat = DAHDI_MAINT_REMOTELOOP;
 			}
-		} else
+		} else {
 			wc->loopupcnt = 0;
+		}
+
 		/* Same for loopdown code */
 		if ((!wc->span.mainttimer) && (d & 0x10)) {
 			/* Loop-down code detected */
-			if ((wc->span.maintstat == DAHDI_MAINT_REMOTELOOP)) {
+			if ((++wc->loopdowncnt > 80) &&
+			    (wc->span.maintstat == DAHDI_MAINT_REMOTELOOP)) {
 				t1_notice(wc, "Loopdown detected,"\
 					" disabling remote loop\n");
 				t1_setreg(wc, 0x36, 0x08);	/* LIM0: Disable any local loop */
 				t1_setreg(wc, 0x37, 0xf0);	/* LIM1: Disable remote loop */
 				wc->span.maintstat = DAHDI_MAINT_NONE;
 			}
-		} else
+		} else {
 			wc->loopdowncnt = 0;
+		}
 	}
 
 	if (wc->span.lineconfig & DAHDI_CONFIG_NOTOPEN) {
@@ -2846,13 +2938,7 @@ static int __devinit te12xp_init_one(struct pci_dev *pdev, const struct pci_devi
 	spin_lock_init(&wc->reglock);
 	INIT_LIST_HEAD(&wc->active_cmds);
 	INIT_LIST_HEAD(&wc->pending_cmds);
-#	if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 18)
-	wc->timer.function = te12xp_timer;
-	wc->timer.data = (unsigned long)wc;
-	init_timer(&wc->timer);
-#	else
 	setup_timer(&wc->timer, te12xp_timer, (unsigned long)wc);
-#	endif
 
 #	if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
 	INIT_WORK(&wc->timer_work, timer_work_func, wc);
@@ -3032,13 +3118,11 @@ static DEFINE_PCI_DEVICE_TABLE(te12xp_pci_tbl) = {
 	{ 0 }
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 12)
 static void te12xp_shutdown(struct pci_dev *pdev)
 {
 	struct t1 *wc = pci_get_drvdata(pdev);
 	voicebus_quiesce(&wc->vb);
 }
-#endif
 
 static int te12xp_suspend(struct pci_dev *pdev, pm_message_t state)
 {
@@ -3051,9 +3135,7 @@ static struct pci_driver te12xp_driver = {
 	.name = "wcte12xp",
 	.probe = te12xp_init_one,
 	.remove = __devexit_p(te12xp_remove_one),
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 12)
 	.shutdown = te12xp_shutdown,
-#endif
 	.suspend = te12xp_suspend,
 	.id_table = te12xp_pci_tbl,
 };

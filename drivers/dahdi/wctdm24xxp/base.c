@@ -7,7 +7,7 @@
  * Support for Hx8 by Andrew Kohlsmith <akohlsmith@mixdown.ca> and Matthew
  * Fredrickson <creslin@digium.com>
  *
- * Copyright (C) 2005 - 2011 Digium, Inc.
+ * Copyright (C) 2005 - 2012 Digium, Inc.
  * All rights reserved.
  *
  * Sections for QRV cards written by Jim Dixon <jim@lambdatel.com>
@@ -55,6 +55,7 @@ Tx Gain - W/Pre-Emphasis: -23.99 to 0.00 db
 #include <asm/semaphore.h>
 #endif
 #include <linux/crc32.h>
+#include <linux/slab.h>
 
 #include <stdbool.h>
 
@@ -1961,11 +1962,17 @@ wctdm_check_battery_lost(struct wctdm *wc, struct wctdm_module *const mod)
 	   battery present or unknown, debounce timer (going to battery lost)
 	*/
 	switch (fxo->battery_state) {
+	case BATTERY_DEBOUNCING_PRESENT_ALARM:
+		fxo->battery_state = BATTERY_DEBOUNCING_LOST_FROM_PRESENT_ALARM;
+		fxo->battdebounce_timer = wc->framecount + battdebounce;
+		break;
 	case BATTERY_DEBOUNCING_PRESENT:
-	case BATTERY_DEBOUNCING_PRESENT_ALARM: /* intentional drop through */
-		/* we were going to BATTERY_PRESENT, but
-		 * battery was lost again. */
 		fxo->battery_state = BATTERY_LOST;
+		break;
+	case BATTERY_DEBOUNCING_PRESENT_FROM_LOST_ALARM:
+		fxo->battery_state = BATTERY_DEBOUNCING_LOST_ALARM;
+		fxo->battdebounce_timer = wc->framecount +
+						battalarm - battdebounce;
 		break;
 	case BATTERY_UNKNOWN:
 		mod_hooksig(wc, mod, DAHDI_RXSIG_ONHOOK);
@@ -1973,7 +1980,8 @@ wctdm_check_battery_lost(struct wctdm *wc, struct wctdm_module *const mod)
 		fxo->battery_state = BATTERY_DEBOUNCING_LOST;
 		fxo->battdebounce_timer = wc->framecount + battdebounce;
 		break;
-	case BATTERY_DEBOUNCING_LOST:
+	case BATTERY_DEBOUNCING_LOST_FROM_PRESENT_ALARM:
+	case BATTERY_DEBOUNCING_LOST: /* Intentional drop through */
 		if (time_after(wc->framecount, fxo->battdebounce_timer)) {
 			if (debug) {
 				dev_info(&wc->vb.pdev->dev,
@@ -2022,7 +2030,8 @@ wctdm_check_battery_present(struct wctdm *wc, struct wctdm_module *const mod)
 	struct fxo *const fxo = &mod->mod.fxo;
 
 	switch (fxo->battery_state) {
-	case BATTERY_DEBOUNCING_PRESENT:
+	case BATTERY_DEBOUNCING_PRESENT_FROM_LOST_ALARM:
+	case BATTERY_DEBOUNCING_PRESENT: /* intentional drop through */
 		if (time_after(wc->framecount, fxo->battdebounce_timer)) {
 			if (debug) {
 				dev_info(&wc->vb.pdev->dev,
@@ -2061,10 +2070,16 @@ wctdm_check_battery_present(struct wctdm *wc, struct wctdm_module *const mod)
 		break;
 	case BATTERY_PRESENT:
 		break;
-	case BATTERY_DEBOUNCING_LOST:
 	case BATTERY_DEBOUNCING_LOST_ALARM:
-		/* we were going to BATTERY_LOST, but battery appeared again,
-		 * so clear the debounce timer */
+		fxo->battery_state = BATTERY_DEBOUNCING_PRESENT_FROM_LOST_ALARM;
+		fxo->battdebounce_timer = wc->framecount + battdebounce;
+		break;
+	case BATTERY_DEBOUNCING_LOST_FROM_PRESENT_ALARM:
+		fxo->battery_state = BATTERY_DEBOUNCING_PRESENT_ALARM;
+		fxo->battdebounce_timer = wc->framecount +
+						battalarm - battdebounce;
+		break;
+	case BATTERY_DEBOUNCING_LOST:
 		fxo->battery_state = BATTERY_PRESENT;
 		break;
 	case BATTERY_UNKNOWN:
@@ -3086,6 +3101,8 @@ wctdm_init_voicedaa(struct wctdm *wc, struct wctdm_module *mod,
 	spin_unlock_irqrestore(&wc->reglock, flags);
 	msleep(20);
 
+	memset(&mod->mod.fxo, 0, sizeof(mod->mod.fxo));
+
 	if (!sane && wctdm_voicedaa_insane(wc, mod))
 		return -2;
 
@@ -3230,8 +3247,7 @@ wctdm_init_proslic(struct wctdm *wc, struct wctdm_module *const mod,
 		return -2;
 
 	/* Initialize VMWI settings */
-	memset(&(fxs->vmwisetting), 0, sizeof(fxs->vmwisetting));
-	fxs->vmwi_linereverse = 0;
+	memset(fxs, 0, sizeof(*fxs));
 
 	/* By default, don't send on hook */
 	if (!reversepolarity != !fxs->reversepolarity)
@@ -4370,32 +4386,6 @@ wctdm_chanconfig(struct file *file, struct dahdi_chan *chan, int sigtype)
 	return wctdm_wait_for_ready(wc);
 }
 
-/*
- * wctdm24xxp_assigned - Called when span is assigned.
- * @span:	The span that is now assigned.
- *
- * This function is called by the core of DAHDI after the span number and
- * channel numbers have been assigned.
- *
- */
-static void wctdm24xxp_assigned(struct dahdi_span *span)
-{
-	struct dahdi_span *s;
-	struct dahdi_device *ddev = span->parent;
-	struct wctdm *wc = NULL;
-
-	list_for_each_entry(s, &ddev->spans, device_node) {
-		wc = (container_of(s, struct wctdm_span, span))->wc;
-		if (!test_bit(DAHDI_FLAGBIT_REGISTERED, &s->flags))
-			return;
-	}
-
-	if (wc) {
-		WARN_ON(0 == wc->not_ready);
-		--wc->not_ready;
-	}
-}
-
 static const struct dahdi_span_ops wctdm24xxp_analog_span_ops = {
 	.owner = THIS_MODULE,
 	.hooksig = wctdm_hooksig,
@@ -4405,7 +4395,6 @@ static const struct dahdi_span_ops wctdm24xxp_analog_span_ops = {
 	.watchdog = wctdm_watchdog,
 	.chanconfig = wctdm_chanconfig,
 	.dacs = wctdm_dacs,
-	.assigned = wctdm24xxp_assigned,
 #ifdef VPM_SUPPORT
 	.enable_hw_preechocan = wctdm_enable_hw_preechocan,
 	.disable_hw_preechocan = wctdm_disable_hw_preechocan,
@@ -4424,7 +4413,6 @@ static const struct dahdi_span_ops wctdm24xxp_digital_span_ops = {
 	.spanconfig = b400m_spanconfig,
 	.chanconfig = b400m_chanconfig,
 	.dacs = wctdm_dacs,
-	.assigned = wctdm24xxp_assigned,
 #ifdef VPM_SUPPORT
 	.enable_hw_preechocan = wctdm_enable_hw_preechocan,
 	.disable_hw_preechocan = wctdm_disable_hw_preechocan,
@@ -4525,10 +4513,11 @@ wctdm_init_span(struct wctdm *wc, int spanno, int chanoffset, int chancount,
 		s->span.linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS | DAHDI_CONFIG_D4;
 		s->span.linecompat |= DAHDI_CONFIG_ESF | DAHDI_CONFIG_HDB3 | DAHDI_CONFIG_CCS | DAHDI_CONFIG_CRC4;
 		s->span.linecompat |= DAHDI_CONFIG_NTTE | DAHDI_CONFIG_TERM;
-		s->span.spantype = "TE";
+		s->span.spantype = SPANTYPE_DIGITAL_BRI_TE;
 	} else {
 		s->span.ops = &wctdm24xxp_analog_span_ops;
 		s->span.flags = DAHDI_FLAG_RBS;
+		s->span.spantype = SPANTYPE_ANALOG_MIXED;
 		/* analog sigcap handled in fixup_analog_span() */
 	}
 
@@ -5936,6 +5925,9 @@ __wctdm_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -1;
 	}
 
+	WARN_ON(wc->not_ready <= 0);
+	--wc->not_ready;
+
 	dev_info(&wc->vb.pdev->dev,
 		 "Found a %s: %s (%d BRI spans, %d analog %s)\n",
 		 (is_hx8(wc)) ? "Hybrid card" : "Wildcard TDM",
@@ -6065,13 +6057,11 @@ static DEFINE_PCI_DEVICE_TABLE(wctdm_pci_tbl) = {
 	{ 0 }
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 12)
 static void wctdm_shutdown(struct pci_dev *pdev)
 {
 	struct wctdm *wc = pci_get_drvdata(pdev);
 	voicebus_quiesce(&wc->vb);
 }
-#endif
 
 MODULE_DEVICE_TABLE(pci, wctdm_pci_tbl);
 
@@ -6084,9 +6074,7 @@ static struct pci_driver wctdm_driver = {
 	.name = "wctdm24xxp",
 	.probe = wctdm_init_one,
 	.remove = __devexit_p(wctdm_remove_one),
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 12)
 	.shutdown = wctdm_shutdown,
-#endif
 	.suspend = wctdm_suspend,
 	.id_table = wctdm_pci_tbl,
 };

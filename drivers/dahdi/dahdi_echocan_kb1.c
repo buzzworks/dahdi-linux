@@ -5,7 +5,7 @@
  *
  * Based upon mec2.h
  * 
- * Copyright (C) 2002, Digium, Inc.
+ * Copyright (C) 2002-2012, Digium, Inc.
  *
  * Additional background on the techniques used in this code can be found in:
  *
@@ -43,9 +43,6 @@
 
 static int debug;
 static int aggressive;
-
-#define module_printk(level, fmt, args...) printk(level "%s: " fmt, THIS_MODULE->name, ## args)
-#define debug_printk(level, fmt, args...) if (debug >= level) printk(KERN_DEBUG "%s (%s): " fmt, THIS_MODULE->name, __FUNCTION__, ## args)
 
 /* Uncomment to provide summary statistics for overall echo can performance every 4000 samples */ 
 /* #define MEC2_STATS 4000 */

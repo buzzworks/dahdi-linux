@@ -31,6 +31,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/moduleparam.h>
+#include <linux/slab.h>
 
 #include <dahdi/kernel.h>
 
@@ -224,7 +225,7 @@ static inline void __select_control(struct t1 *wc)
 	}
 }
 
-static int t1xxp_open(struct dahdi_chan *chan)
+static int _t1xxp_open(struct dahdi_chan *chan)
 {
 	struct t1 *wc = chan->pvt;
 	if (wc->dead)
@@ -232,6 +233,16 @@ static int t1xxp_open(struct dahdi_chan *chan)
 	wc->usecount++;
 
 	return 0;
+}
+
+static int t1xxp_open(struct dahdi_chan *chan)
+{
+	unsigned long flags;
+	int res;
+	spin_lock_irqsave(&chan->lock, flags);
+	res = _t1xxp_open(chan);
+	spin_unlock_irqrestore(&chan->lock, flags);
+	return res;
 }
 
 static int __control_set_reg(struct t1 *wc, int reg, unsigned char val)
@@ -1000,12 +1011,12 @@ static int t1xxp_software_init(struct t1 *wc)
 		else
 			wc->span.channels = 31;
 		wc->span.deflaw = DAHDI_LAW_ALAW;
-		wc->span.spantype = "E1";
+		wc->span.spantype = SPANTYPE_DIGITAL_E1;
 		wc->span.linecompat = DAHDI_CONFIG_HDB3 | DAHDI_CONFIG_CCS | DAHDI_CONFIG_CRC4;
 	} else {
 		wc->span.channels = 24;
 		wc->span.deflaw = DAHDI_LAW_MULAW;
-		wc->span.spantype = "T1";
+		wc->span.spantype = SPANTYPE_DIGITAL_T1;
 		wc->span.linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS | DAHDI_CONFIG_D4 | DAHDI_CONFIG_ESF;
 	}
 	wc->span.chans = wc->chans;

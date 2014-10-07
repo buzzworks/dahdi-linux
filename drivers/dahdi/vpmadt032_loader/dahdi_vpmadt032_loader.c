@@ -1,7 +1,7 @@
 /*
  * DAHDI Telephony Interface to VPMADT032 Firmware Loader
  *
- * Copyright (C) 2008-2011 Digium, Inc. All rights reserved.
+ * Copyright (C) 2008-2012 Digium, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -23,6 +23,7 @@
 #include <linux/ctype.h>
 #include <linux/moduleparam.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 #include <dahdi/kernel.h>
 
@@ -38,18 +39,9 @@ logger(const char *format, ...)
 	int res;
 	va_list args;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 9)
 	va_start(args, format);
 	res = vprintk(format, args);
 	va_end(args);
-#else
-	char buf[256];
-
-	va_start(args, format);
-	res = vsnprintf(buf, sizeof(buf), format, args);
-	va_end(args);
-	printk(KERN_INFO "%s" buf);
-#endif
 
 	return res;
 }

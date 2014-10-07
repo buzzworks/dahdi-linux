@@ -1,7 +1,7 @@
 /*
  * DAHDI Telephony Interface to Digium High-Performance Echo Canceller
  *
- * Copyright (C) 2006-2008 Digium, Inc.
+ * Copyright (C) 2006-2012 Digium, Inc.
  *
  * All rights reserved.
  *
@@ -30,9 +30,6 @@
 #include <dahdi/kernel.h>
 
 static int debug;
-
-#define module_printk(level, fmt, args...) printk(level "%s: " fmt, THIS_MODULE->name, ## args)
-#define debug_printk(level, fmt, args...) if (debug >= level) printk(KERN_DEBUG "%s (%s): " fmt, THIS_MODULE->name, __FUNCTION__, ## args)
 
 #include "hpec_user.h"
 #include "hpec.h"
@@ -75,18 +72,9 @@ static int __attribute__((regparm(0), format(printf, 1, 2))) logger(const char *
 	int res;
 	va_list args;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
 	va_start(args, format);
 	res = vprintk(format, args);
 	va_end(args);
-#else
-	char buf[256];
-
-	va_start(args, format);
-	res = vsnprintf(buf, sizeof(buf), format, args);
-	va_end(args);
-	printk(KERN_INFO "%s" buf);
-#endif
 
 	return res;
 }

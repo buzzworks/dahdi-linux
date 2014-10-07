@@ -36,6 +36,7 @@
 #include <linux/netdevice.h>
 #include <linux/notifier.h>
 #include <linux/crc32.h>
+#include <linux/seq_file.h>
 
 /**
  * Undefine USE_PROC_FS, if you do not want the /proc/dahdi/dynamic-ethmf
@@ -224,13 +225,8 @@ static inline int ethmf_trx_spans_ready(unsigned int addr_hash, struct ztdeth *(
 /**
  * Ethernet receiving side processing function.
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 14)
 static int ztdethmf_rcv(struct sk_buff *skb, struct net_device *dev,
 		struct packet_type *pt, struct net_device *orig_dev)
-#else
-static int ztdethmf_rcv(struct sk_buff *skb, struct net_device *dev,
-		struct packet_type *pt)
-#endif
 {
 	int num_spans = 0, span_index = 0;
 	unsigned char *data;
@@ -267,13 +263,8 @@ static int ztdethmf_rcv(struct sk_buff *skb, struct net_device *dev,
 
 		rcu_read_lock();
 		do {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 9)
 			find_ethmf(eth_hdr(skb)->h_source,
 				htons(span_index), &z, &span);
-#else
-			find_ethmf(skb->mac.ethernet->h_source,
-				htons(span_index), &z, &span);
-#endif
 			if (unlikely(!z || !span)) {
 				/* The recv'd span does not belong to us */
 				/* ethmf_errors_inc(); */
@@ -396,10 +387,6 @@ static void ztdethmf_transmit(struct dahdi_dynamic *dyn, u8 *msg, size_t msglen)
 	struct net_device *dev;
 	unsigned char addr[ETH_ALEN];
 	int spans_ready = 0, index = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 10)
-	static DEFINE_SPINLOCK(lock);
-	unsigned long flags;
-#endif
 
 	if (atomic_read(&shutdown))
 		return;
@@ -411,24 +398,12 @@ static void ztdethmf_transmit(struct dahdi_dynamic *dyn, u8 *msg, size_t msglen)
 		return;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 10)
-	if (!atomic_read(&z->ready)) {
-		spin_lock_irqsave(&lock, flags);
-		atomic_inc(&z->ready);
-		if (1 == atomic_read(&z->ready)) {
-			memcpy(z->msgbuf, msg, msglen);
-			z->msgbuf_len = msglen;
-		}
-		spin_unlock_irqrestore(&lock, flags);
-	}
-#else
 	if (!atomic_read(&z->ready)) {
 		if (atomic_inc_return(&z->ready) == 1) {
 			memcpy(z->msgbuf, msg, msglen);
 			z->msgbuf_len = msglen;
 		}
 	}
-#endif
 
 	spans_ready = ethmf_trx_spans_ready(z->addr_hash, &ready_spans);
 	if (spans_ready) {
@@ -722,71 +697,69 @@ static void timer_callback(unsigned long param)
 #ifdef USE_PROC_FS
 static struct proc_dir_entry *proc_entry;
 static const char *ztdethmf_procname = "dahdi/dynamic-ethmf";
-static int ztdethmf_proc_read(char *page, char **start, off_t off, int count,
-		int *eof, void *data)
+
+static int ztdethmf_proc_show(struct seq_file *sfile, void *not_used)
 {
 	struct ztdeth *z = NULL;
-	int len = 0, i = 0;
+	int i = 0;
 	unsigned int group = 0, c = 0;
 
 	rcu_read_lock();
 
-	len += sprintf(page + len, "Errors: %d\n\n", atomic_read(&errcount));
+	seq_printf(sfile, "Errors: %d\n\n", atomic_read(&errcount));
 
 	for (group = 0; group < ETHMF_MAX_GROUPS; ++group) {
 		if (atomic_read(&(ethmf_groups[group].spans))) {
-			len += sprintf(page + len, "Group #%d (0x%x)\n", i++, ethmf_groups[group].hash_addr);
-			len += sprintf(page + len, "  Spans: %d\n",
-				atomic_read(&(ethmf_groups[group].spans)));
+			seq_printf(sfile, "Group #%d (0x%x)\n", i++,
+				   ethmf_groups[group].hash_addr);
+			seq_printf(sfile, "Spans: %d\n",
+				   atomic_read(&(ethmf_groups[group].spans)));
 
 			c = 1;
 			list_for_each_entry_rcu(z, &ethmf_list, list) {
 				if (z->addr_hash == ethmf_groups[group].hash_addr) {
 					if (c == 1) {
-						len += sprintf(page + len,
+						seq_printf(sfile,
 							"  Device: %s (MAC: %02x:%02x:%02x:%02x:%02x:%02x)\n",
 							z->ethdev,
 							z->addr[0], z->addr[1], z->addr[2],
 							z->addr[3], z->addr[4], z->addr[5]);
 					}
-					len += sprintf(page + len, "    Span %d: subaddr=%u ready=%d delay=%d real_channels=%d no_front_padding=%d\n",
+					seq_printf(sfile, "    Span %d: subaddr=%u ready=%d delay=%d real_channels=%d no_front_padding=%d\n",
 						c++, ntohs(z->subaddr),
 						atomic_read(&z->ready), atomic_read(&z->delay),
 						z->real_channels, atomic_read(&z->no_front_padding));
 				}
 			}
-			len += sprintf(page + len, "  Device UPs: %u\n",
+			seq_printf(sfile, "  Device UPs: %u\n",
 				atomic_read(&(ethmf_groups[group].devupcount)));
-			len += sprintf(page + len, "  Device DOWNs: %u\n",
+			seq_printf(sfile, "  Device DOWNs: %u\n",
 				atomic_read(&(ethmf_groups[group].devdowncount)));
-			len += sprintf(page + len, "  Rx Frames: %u\n",
+			seq_printf(sfile, "  Rx Frames: %u\n",
 				atomic_read(&(ethmf_groups[group].rxframecount)));
-			len += sprintf(page + len, "  Tx Frames: %u\n",
+			seq_printf(sfile, "  Tx Frames: %u\n",
 				atomic_read(&(ethmf_groups[group].txframecount)));
-			len += sprintf(page + len, "  Rx Bytes: %u\n",
+			seq_printf(sfile, "  Rx Bytes: %u\n",
 				atomic_read(&(ethmf_groups[group].rxbytecount)));
-			len += sprintf(page + len, "  Tx Bytes: %u\n",
+			seq_printf(sfile, "  Tx Bytes: %u\n",
 				atomic_read(&(ethmf_groups[group].txbytecount)));
-			if (len <= off) {
-				off -= len;
-				len = 0;
-			}
-			if (len > off+count)
-				break;
 		}
 	}
 	rcu_read_unlock();
-
-	if (len <= off) {
-		off -= len;
-		len = 0;
-	}
-	*start = page + off;
-	len -= off;
-	if (len > count)
-		len = count;
-	return len;
+	return 0;
 }
+
+static int ztdethmf_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ztdethmf_proc_show, NULL);
+}
+
+static const struct file_operations ztdethmf_proc_fops = {
+	.open           = ztdethmf_proc_open,
+	.read           = seq_read,
+	.llseek         = seq_lseek,
+	.release        = seq_release,
+};
 #endif
 
 static int __init ztdethmf_init(void)
@@ -804,8 +777,8 @@ static int __init ztdethmf_init(void)
 	skb_queue_head_init(&skbs);
 
 #ifdef USE_PROC_FS
-	proc_entry = create_proc_read_entry(ztdethmf_procname, 0444, NULL,
-		ztdethmf_proc_read, NULL);
+	proc_entry = proc_create_data(ztdethmf_procname, 0444, NULL,
+				      &ztdethmf_proc_fops, NULL);
 	if (!proc_entry) {
 		printk(KERN_ALERT "create_proc_read_entry failed.\n");
 	}

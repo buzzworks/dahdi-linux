@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2006 Digium, Inc.
+ * Copyright (C) 2005-2012 Digium, Inc.
  *
  * Mark Spencer <markster@digium.com>
  *
@@ -19,110 +19,74 @@
  * this program for more details.
  */
 
+#define pr_fmt(fmt)             KBUILD_MODNAME ": " fmt
+
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/string.h>
 #include <linux/time.h>
 #include <linux/version.h>
 
+#include <dahdi/kernel.h>
+#include <stdbool.h>
+
 #include "vpm450m.h"
-#include "oct6100api/oct6100_api.h"
+#include <oct612x.h>
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
-#include <linux/config.h>
-#endif
-
-/* API for Octasic access */
-UINT32 Oct6100UserGetTime(tPOCT6100_GET_TIME f_pTime)
+static int wct4xxp_oct612x_write(struct oct612x_context *context,
+				 u32 address, u16 value)
 {
-	/* Why couldn't they just take a timeval like everyone else? */
-	struct timeval tv;
-	unsigned long long total_usecs;
-	unsigned int mask = ~0;
-	
-	do_gettimeofday(&tv);
-	total_usecs = (((unsigned long long)(tv.tv_sec)) * 1000000) + 
-				  (((unsigned long long)(tv.tv_usec)));
-	f_pTime->aulWallTimeUs[0] = (total_usecs & mask);
-	f_pTime->aulWallTimeUs[1] = (total_usecs >> 32);
-	return cOCT6100_ERR_OK;
+	struct t4 *wc = dev_get_drvdata(context->dev);
+	oct_set_reg(wc, address, value);
+	return 0;
 }
 
-UINT32 Oct6100UserMemSet(PVOID f_pAddress, UINT32 f_ulPattern, UINT32 f_ulLength)
+static int wct4xxp_oct612x_read(struct oct612x_context *context, u32 address,
+				u16 *value)
 {
-	memset(f_pAddress, f_ulPattern, f_ulLength);
-	return cOCT6100_ERR_OK;
+	struct t4 *wc = dev_get_drvdata(context->dev);
+	*value = (u16)oct_get_reg(wc, address);
+	return 0;
 }
 
-UINT32 Oct6100UserMemCopy(PVOID f_pDestination, const void *f_pSource, UINT32 f_ulLength)
+static int wct4xxp_oct612x_write_smear(struct oct612x_context *context,
+				       u32 address, u16 value, size_t count)
 {
-	memcpy(f_pDestination, f_pSource, f_ulLength);
-	return cOCT6100_ERR_OK;
+	struct t4 *wc = dev_get_drvdata(context->dev);
+	int i;
+	for (i = 0; i < count; ++i)
+		oct_set_reg(wc, address + (i << 1), value);
+	return 0;
 }
 
-UINT32 Oct6100UserCreateSerializeObject(tPOCT6100_CREATE_SERIALIZE_OBJECT f_pCreate)
+static int wct4xxp_oct612x_write_burst(struct oct612x_context *context,
+				       u32 address, const u16 *buffer,
+				       size_t count)
 {
-	return cOCT6100_ERR_OK;
+	struct t4 *wc = dev_get_drvdata(context->dev);
+	int i;
+	for (i = 0; i < count; ++i)
+		oct_set_reg(wc, address + (i << 1), buffer[i]);
+	return 0;
 }
 
-UINT32 Oct6100UserDestroySerializeObject(tPOCT6100_DESTROY_SERIALIZE_OBJECT f_pDestroy)
+static int wct4xxp_oct612x_read_burst(struct oct612x_context *context,
+				      u32 address, u16 *buffer, size_t count)
 {
-#ifdef OCTASIC_DEBUG
-	printk(KERN_DEBUG "I should never be called! (destroy serialize object)\n");
-#endif
-	return cOCT6100_ERR_OK;
+	struct t4 *wc = dev_get_drvdata(context->dev);
+	int i;
+	for (i = 0; i < count; ++i)
+		buffer[i] = oct_get_reg(wc, address + (i << 1));
+	return 0;
 }
 
-UINT32 Oct6100UserSeizeSerializeObject(tPOCT6100_SEIZE_SERIALIZE_OBJECT f_pSeize)
-{
-	/* Not needed */
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserReleaseSerializeObject(tPOCT6100_RELEASE_SERIALIZE_OBJECT f_pRelease)
-{
-	/* Not needed */
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserDriverWriteApi(tPOCT6100_WRITE_PARAMS f_pWriteParams)
-{
-	oct_set_reg(f_pWriteParams->pProcessContext, f_pWriteParams->ulWriteAddress, f_pWriteParams->usWriteData);
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserDriverWriteSmearApi(tPOCT6100_WRITE_SMEAR_PARAMS f_pSmearParams)
-{
-	unsigned int x;
-	for (x=0;x<f_pSmearParams->ulWriteLength;x++) {
-		oct_set_reg(f_pSmearParams->pProcessContext, f_pSmearParams->ulWriteAddress + (x << 1), f_pSmearParams->usWriteData);
-	}
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserDriverWriteBurstApi(tPOCT6100_WRITE_BURST_PARAMS f_pBurstParams)
-{
-	unsigned int x;
-	for (x=0;x<f_pBurstParams->ulWriteLength;x++) {
-		oct_set_reg(f_pBurstParams->pProcessContext, f_pBurstParams->ulWriteAddress + (x << 1), f_pBurstParams->pusWriteData[x]);
-	}
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserDriverReadApi(tPOCT6100_READ_PARAMS f_pReadParams)
-{
-	*(f_pReadParams->pusReadData) = oct_get_reg(f_pReadParams->pProcessContext, f_pReadParams->ulReadAddress);
-	return cOCT6100_ERR_OK;
-}
-
-UINT32 Oct6100UserDriverReadBurstApi(tPOCT6100_READ_BURST_PARAMS f_pBurstParams)
-{
-	unsigned int x;
-	for (x=0;x<f_pBurstParams->ulReadLength;x++) {
-		f_pBurstParams->pusReadData[x] = oct_get_reg(f_pBurstParams->pProcessContext, f_pBurstParams->ulReadAddress + (x << 1));
-	}
-	return cOCT6100_ERR_OK;
-}
+static const struct oct612x_ops wct4xxp_oct612x_ops = {
+	.write = wct4xxp_oct612x_write,
+	.read = wct4xxp_oct612x_read,
+	.write_smear = wct4xxp_oct612x_write_smear,
+	.write_burst = wct4xxp_oct612x_write_burst,
+	.read_burst = wct4xxp_oct612x_read_burst,
+};
 
 #define SOUT_G168_1100GB_ON 0x40000004
 #define SOUT_DTMF_1 0x40000011
@@ -172,6 +136,7 @@ UINT32 Oct6100UserDriverReadBurstApi(tPOCT6100_READ_BURST_PARAMS f_pBurstParams)
 
 struct vpm450m {
 	tPOCT6100_INSTANCE_API pApiInstance;
+	struct oct612x_context context;
 	UINT32 aulEchoChanHndl[256];
 	int chanflags[256];
 	int ecmode[256];
@@ -181,6 +146,7 @@ struct vpm450m {
 #define FLAG_DTMF	 (1 << 0)
 #define FLAG_MUTE	 (1 << 1)
 #define FLAG_ECHO	 (1 << 2)
+#define FLAG_ALAW	 (1 << 3)
 
 static unsigned int tones[] = {
 	SOUT_DTMF_1,
@@ -220,6 +186,52 @@ static unsigned int tones[] = {
 	ROUT_G168_1100GB_ON,
 };
 
+void vpm450m_set_alaw_companding(struct vpm450m *vpm450m, int channel,
+					bool alaw)
+{
+	tOCT6100_CHANNEL_MODIFY *modify;
+	UINT32 ulResult;
+	UINT32		law_to_use = (alaw) ? cOCT6100_PCM_A_LAW :
+					      cOCT6100_PCM_U_LAW;
+
+	if (channel >= ARRAY_SIZE(vpm450m->chanflags)) {
+		pr_err("Channel out of bounds in %s\n", __func__);
+		return;
+	}
+	/* If we're already in this companding mode, no need to do anything. */
+	if (alaw == ((vpm450m->chanflags[channel] & FLAG_ALAW) > 0))
+		return;
+
+	modify = kzalloc(sizeof(tOCT6100_CHANNEL_MODIFY), GFP_ATOMIC);
+	if (!modify) {
+		pr_notice("Unable to allocate memory for setec!\n");
+		return;
+	}
+
+	Oct6100ChannelModifyDef(modify);
+	modify->ulChannelHndl =		      vpm450m->aulEchoChanHndl[channel];
+	modify->fTdmConfigModified =		TRUE;
+	modify->TdmConfig.ulSinPcmLaw =		law_to_use;
+	modify->TdmConfig.ulRinPcmLaw =		law_to_use;
+	modify->TdmConfig.ulSoutPcmLaw =	law_to_use;
+	modify->TdmConfig.ulRoutPcmLaw =	law_to_use;
+	ulResult = Oct6100ChannelModify(vpm450m->pApiInstance, modify);
+	if (ulResult != GENERIC_OK) {
+		pr_notice("Failed to apply echo can changes on channel %d %d %08x!\n",
+			  vpm450m->aulEchoChanHndl[channel], channel, ulResult);
+	} else {
+		if (debug) {
+			pr_info("Changed companding on channel %d to %s.\n",
+				channel, (alaw) ? "alaw" : "ulaw");
+		}
+		if (alaw)
+			vpm450m->chanflags[channel] |= FLAG_ALAW;
+		else
+			vpm450m->chanflags[channel] &= ~(FLAG_ALAW);
+	}
+	kfree(modify);
+}
+
 static void vpm450m_setecmode(struct vpm450m *vpm450m, int channel, int mode)
 {
 	tOCT6100_CHANNEL_MODIFY *modify;
@@ -227,7 +239,7 @@ static void vpm450m_setecmode(struct vpm450m *vpm450m, int channel, int mode)
 
 	if (vpm450m->ecmode[channel] == mode)
 		return;
-	modify = kmalloc(sizeof(tOCT6100_CHANNEL_MODIFY), GFP_ATOMIC);
+	modify = kzalloc(sizeof(*modify), GFP_ATOMIC);
 	if (!modify) {
 		printk(KERN_NOTICE "wct4xxp: Unable to allocate memory for setec!\n");
 		return;
@@ -252,7 +264,12 @@ void vpm450m_setdtmf(struct vpm450m *vpm450m, int channel, int detect, int mute)
 	tOCT6100_CHANNEL_MODIFY *modify;
 	UINT32 ulResult;
 
-	modify = kmalloc(sizeof(tOCT6100_CHANNEL_MODIFY), GFP_KERNEL);
+	if (channel >= ARRAY_SIZE(vpm450m->chanflags)) {
+		pr_err("Channel out of bounds in %s\n", __func__);
+		return;
+	}
+
+	modify = kzalloc(sizeof(*modify), GFP_KERNEL);
 	if (!modify) {
 		printk(KERN_NOTICE "wct4xxp: Unable to allocate memory for setdtmf!\n");
 		return;
@@ -290,6 +307,11 @@ void vpm450m_setdtmf(struct vpm450m *vpm450m, int channel, int detect, int mute)
 
 void vpm450m_setec(struct vpm450m *vpm450m, int channel, int eclen)
 {
+	if (channel >= ARRAY_SIZE(vpm450m->chanflags)) {
+		pr_err("Channel out of bounds in %s\n", __func__);
+		return;
+	}
+
 	if (eclen) {
 		vpm450m->chanflags[channel] |= FLAG_ECHO;
 		vpm450m_setecmode(vpm450m, channel, cOCT6100_ECHO_OP_MODE_HT_RESET);
@@ -395,14 +417,18 @@ int vpm450m_getdtmf(struct vpm450m *vpm450m, int *channel, int *tone, int *start
 	return 0;
 }
 
-unsigned int get_vpm450m_capacity(void *wc)
+unsigned int get_vpm450m_capacity(struct device *device)
 {
+	struct oct612x_context context;
 	UINT32 ulResult;
 
 	tOCT6100_API_GET_CAPACITY_PINS CapacityPins;
 
+	context.dev = device;
+	context.ops = &wct4xxp_oct612x_ops;
+
 	Oct6100ApiGetCapacityPinsDef(&CapacityPins);
-	CapacityPins.pProcessContext = wc;
+	CapacityPins.pProcessContext = &context;
 	CapacityPins.ulMemoryType = cOCT6100_MEM_TYPE_DDR;
 	CapacityPins.fEnableMemClkOut = TRUE;
 	CapacityPins.ulMemClkFreq = cOCT6100_MCLK_FREQ_133_MHZ;
@@ -416,7 +442,8 @@ unsigned int get_vpm450m_capacity(void *wc)
 	return CapacityPins.ulCapacityValue;
 }
 
-struct vpm450m *init_vpm450m(void *wc, int *isalaw, int numspans, const struct firmware *firmware)
+struct vpm450m *init_vpm450m(struct device *device, int *isalaw,
+			     int numspans, const struct firmware *firmware)
 {
 	tOCT6100_CHIP_OPEN *ChipOpen;
 	tOCT6100_GET_INSTANCE_SIZE InstanceSize;
@@ -427,25 +454,26 @@ struct vpm450m *init_vpm450m(void *wc, int *isalaw, int numspans, const struct f
 	struct vpm450m *vpm450m;
 	int x,y,law;
 	
-	if (!(vpm450m = kmalloc(sizeof(struct vpm450m), GFP_KERNEL)))
+	vpm450m = kzalloc(sizeof(*vpm450m), GFP_KERNEL);
+	if (!vpm450m)
 		return NULL;
 
-	memset(vpm450m, 0, sizeof(struct vpm450m));
+	vpm450m->context.dev = device;
+	vpm450m->context.ops = &wct4xxp_oct612x_ops;
 
-	if (!(ChipOpen = kmalloc(sizeof(tOCT6100_CHIP_OPEN), GFP_KERNEL))) {
+	ChipOpen = kzalloc(sizeof(*ChipOpen), GFP_KERNEL);
+	if (!ChipOpen) {
+		kfree(vpm450m);
 		kfree(vpm450m);
 		return NULL;
 	}
 
-	memset(ChipOpen, 0, sizeof(tOCT6100_CHIP_OPEN));
-
-	if (!(ChannelOpen = kmalloc(sizeof(tOCT6100_CHANNEL_OPEN), GFP_KERNEL))) {
+	ChannelOpen = kzalloc(sizeof(*ChannelOpen), GFP_KERNEL);
+	if (!ChannelOpen) {
 		kfree(vpm450m);
 		kfree(ChipOpen);
 		return NULL;
 	}
-
-	memset(ChannelOpen, 0, sizeof(tOCT6100_CHANNEL_OPEN));
 
 	for (x = 0; x < ARRAY_SIZE(vpm450m->ecmode); x++)
 		vpm450m->ecmode[x] = -1;
@@ -459,7 +487,7 @@ struct vpm450m *init_vpm450m(void *wc, int *isalaw, int numspans, const struct f
 	ChipOpen->ulUpclkFreq = cOCT6100_UPCLK_FREQ_33_33_MHZ;
 	Oct6100GetInstanceSizeDef(&InstanceSize);
 
-	ChipOpen->pProcessContext = wc;
+	ChipOpen->pProcessContext = &vpm450m->context;
 
 	ChipOpen->pbyImageFile = firmware->data;
 	ChipOpen->ulImageSize = firmware->size;
@@ -528,10 +556,13 @@ struct vpm450m *init_vpm450m(void *wc, int *isalaw, int numspans, const struct f
 		 	*  therefore, the lower 2 bits tell us which span this 
 			*  timeslot/channel
 		 	*/
-			if (isalaw[x & mask])
+			if (isalaw[x & mask]) {
 				law = cOCT6100_PCM_A_LAW;
-			else
+				vpm450m->chanflags[x] |= FLAG_ALAW;
+			} else {
 				law = cOCT6100_PCM_U_LAW;
+				vpm450m->chanflags[x] &= ~(FLAG_ALAW);
+			}
 			Oct6100ChannelOpenDef(ChannelOpen);
 			ChannelOpen->pulChannelHndl = &vpm450m->aulEchoChanHndl[x];
 			ChannelOpen->ulUserChanId = x;

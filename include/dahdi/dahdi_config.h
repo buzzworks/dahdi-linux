@@ -21,9 +21,6 @@
 
 #ifdef __KERNEL__
 #include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
-#include <linux/config.h>
-#endif
 #endif
 
 /* DAHDI compile time options */
@@ -43,11 +40,10 @@
 /* #define SHORT_FLASH_TIME */
 
 /*
- * Uncomment to disable calibration and/or DC/DC converter tests
+ * Uncomment to disable calibration tests
  * (not generally recommended)
  */
 /* #define NO_CALIBRATION */
-/* #define NO_DCDC */
 
 /*
  * Boost ring voltage (Higher ring voltage, takes more power)
@@ -76,9 +72,7 @@
 /* You can still override them below */
 #if defined(CONFIG_HDLC) || defined(CONFIG_HDLC_MODULE)
 #define DAHDI_HDLC_TYPE_TRANS
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,3)
 #define HDLC_MAINTAINERS_ARE_MORE_STUPID_THAN_I_THOUGHT
-#endif
 #endif
 
 /*
@@ -194,5 +188,11 @@
  * Creates an interface for mirroring the raw channel data out to a pseudo-chan
  */
 /* #define CONFIG_DAHDI_MIRROR */
+
+/*
+ * Adds support for conference links. There are some non-Asterisk users of this
+ * functionality.
+ */
+/* #define CONFIG_DAHDI_CONFLINK */
 
 #endif

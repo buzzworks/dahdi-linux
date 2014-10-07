@@ -31,6 +31,7 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/moduleparam.h>
+#include <linux/slab.h>
 
 #include <dahdi/kernel.h>
 #define NEED_PCI_IDS
@@ -253,16 +254,6 @@ static int tor2_chanconfig(struct file *file,
 	return 0;
 }
 
-static int tor2_open(struct dahdi_chan *chan)
-{
-	return 0;
-}
-
-static int tor2_close(struct dahdi_chan *chan)
-{
-	return 0;
-}
-
 static const struct dahdi_span_ops tor2_span_ops = {
 	.owner = THIS_MODULE,
 	.spanconfig = tor2_spanconfig,
@@ -271,8 +262,6 @@ static const struct dahdi_span_ops tor2_span_ops = {
 	.shutdown = tor2_shutdown,
 	.rbsbits = tor2_rbsbits,
 	.maint = tor2_maint,
-	.open = tor2_open,
-	.close  = tor2_close,
 	.ioctl = tor2_ioctl,
 };
 
@@ -290,12 +279,12 @@ static void init_spans(struct tor2 *tor)
 			s->channels = 24;
 			s->deflaw = DAHDI_LAW_MULAW;
 			s->linecompat = DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS | DAHDI_CONFIG_D4 | DAHDI_CONFIG_ESF;
-			s->spantype = "T1";
+			s->spantype = SPANTYPE_DIGITAL_T1;
 		} else {
 			s->channels = 31;
 			s->deflaw = DAHDI_LAW_ALAW;
 			s->linecompat = DAHDI_CONFIG_HDB3 | DAHDI_CONFIG_CCS | DAHDI_CONFIG_CRC4;
-			s->spantype = "E1";
+			s->spantype = SPANTYPE_DIGITAL_E1;
 		}
 		s->chans = tor->chans[x];
 		s->flags = DAHDI_FLAG_RBS;

@@ -5,7 +5,7 @@
  *
  * Based upon kb1ec.h and mec2.h
  * 
- * Copyright (C) 2002, Digium, Inc.
+ * Copyright (C) 2002-2012, Digium, Inc.
  *
  * Additional background on the techniques used in this code can be found in:
  *
@@ -43,9 +43,6 @@
 
 static int debug;
 static int aggressive;
-
-#define module_printk(level, fmt, args...) printk(level "%s: " fmt, THIS_MODULE->name, ## args)
-#define debug_printk(level, fmt, args...) if (debug >= level) printk("%s (%s): " fmt, THIS_MODULE->name, __FUNCTION__, ## args)
 
 #define ABS(a) abs(a!=-32768?a:-32767)
 

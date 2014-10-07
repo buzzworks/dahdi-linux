@@ -1,112 +1,46 @@
+/* dahdi-sysfs.c
+ *
+ * Copyright (C) 2011-2012, Xorcom
+ * Copyright (C) 2011-2012, Digium, Inc.
+ *
+ * All rights reserved.
+ *
+ */
+
+/*
+ * See http://www.asterisk.org for more information about
+ * the Asterisk project. Please do not directly contact
+ * any of the maintainers of this project for assistance;
+ * the project provides a web site, mailing lists and IRC
+ * channels for your use.
+ *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2 as published by the
+ * Free Software Foundation. See the LICENSE file included with
+ * this program for more details.
+ */
+
 #include <linux/kernel.h>
 #include <linux/version.h>
 #define DAHDI_PRINK_MACROS_USE_debug
 #include <dahdi/kernel.h>
 #include <linux/device.h>
 #include <linux/slab.h>
+#include <linux/ctype.h>
 
 #include "dahdi.h"
-
-/* FIXME: Move to kernel.h */
-#define module_printk(level, fmt, args...) printk(level "%s: " fmt, THIS_MODULE->name, ## args)
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
-#define CLASS_DEV_CREATE(class, devt, device, name) \
-	device_create(class, device, devt, NULL, "%s", name)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-#define CLASS_DEV_CREATE(class, devt, device, name) \
-	device_create(class, device, devt, name)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15)
-#define CLASS_DEV_CREATE(class, devt, device, name) \
-        class_device_create(class, NULL, devt, device, name)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-#define CLASS_DEV_CREATE(class, devt, device, name) \
-        class_device_create(class, devt, device, name)
-#else
-#define CLASS_DEV_CREATE(class, devt, device, name) \
-        class_simple_device_add(class, devt, device, name)
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
-#define CLASS_DEV_DESTROY(class, devt) \
-	device_destroy(class, devt)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-#define CLASS_DEV_DESTROY(class, devt) \
-	class_device_destroy(class, devt)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
-#define CLASS_DEV_DESTROY(class, devt) \
-	class_simple_device_remove(devt)
-#else
-#define CLASS_DEV_DESTROY(class, devt) \
-	class_simple_device_remove(class, devt)
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-static struct class *dahdi_class = NULL;
-#else
-static struct class_simple *dahdi_class = NULL;
-#define class_create class_simple_create
-#define class_destroy class_simple_destroy
-#endif
-
-/*
- * Very old hotplug support
- */
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 9)
-#define	OLD_HOTPLUG_SUPPORT	/* for older kernels */
-#define	OLD_HOTPLUG_SUPPORT_269
-#endif
-
-#ifdef	OLD_HOTPLUG_SUPPORT_269
-/* Copy from new kernels lib/kobject_uevent.c */
-enum kobject_action {
-	KOBJ_ADD,
-	KOBJ_REMOVE,
-	KOBJ_CHANGE,
-	KOBJ_MOUNT,
-	KOBJ_UMOUNT,
-	KOBJ_OFFLINE,
-	KOBJ_ONLINE,
-};
-#endif
-
-/*
- * Hotplug replaced with uevent in 2.6.16
- */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 16)
-#define	OLD_HOTPLUG_SUPPORT	/* for older kernels */
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 14)
-#define	DEVICE_ATTR_READER(name, dev, buf)	\
-		ssize_t name(struct device *dev, struct device_attribute *attr,\
-				char *buf)
-#define	DEVICE_ATTR_WRITER(name, dev, buf, count)	\
-		ssize_t name(struct device *dev, struct device_attribute *attr,\
-				const char *buf, size_t count)
-#define BUS_ATTR_READER(name, dev, buf) \
-	ssize_t name(struct device *dev, struct device_attribute *attr, \
-		char *buf)
-#define BUS_ATTR_WRITER(name, dev, buf, count) \
-		ssize_t name(struct device *dev, struct device_attribute *attr,\
-			const char *buf, size_t count)
-#else
-#define	DEVICE_ATTR_READER(name, dev, buf)	\
-		ssize_t name(struct device *dev, char *buf)
-#define	DEVICE_ATTR_WRITER(name, dev, buf, count)	\
-		ssize_t name(struct device *dev, const char *buf, size_t count)
-#define BUS_ATTR_READER(name, dev, buf) \
-		ssize_t name(struct device *dev, char *buf)
-#define BUS_ATTR_WRITER(name, dev, buf, count) \
-		ssize_t name(struct device *dev, const char *buf, size_t count)
-#endif
-
-#define	DRIVER_ATTR_READER(name, drv, buf)	\
-		ssize_t name(struct device_driver *drv, char * buf)
+#include "dahdi-sysfs.h"
 
 
-static char *initdir = "/usr/share/dahdi";
-module_param(initdir, charp, 0644);
+static char *initdir;
+module_param(initdir, charp, 0444);
+MODULE_PARM_DESC(initdir,
+		"deprecated, should use <tools_rootdir>/usr/share/dahdi");
+
+static char *tools_rootdir;
+module_param(tools_rootdir, charp, 0444);
+MODULE_PARM_DESC(tools_rootdir,
+		"root directory of all tools paths (default /)");
 
 static int span_match(struct device *dev, struct device_driver *driver)
 {
@@ -118,26 +52,11 @@ static inline struct dahdi_span *dev_to_span(struct device *dev)
 	return dev_get_drvdata(dev);
 }
 
-#ifdef OLD_HOTPLUG_SUPPORT
-static int span_hotplug(struct device *dev, char **envp, int envnum,
-		char *buff, int bufsize)
-{
-	struct dahdi_span *span;
-
-	if (!dev)
-		return -ENODEV;
-	span = dev_to_span(dev);
-	envp[0] = buff;
-	if (snprintf(buff, bufsize, "SPAN_NAME=%s", span->name) >= bufsize)
-		return -ENOMEM;
-	envp[1] = NULL;
-	return 0;
-}
-#else
-
 #define	SPAN_VAR_BLOCK	\
 	do {		\
-		DAHDI_ADD_UEVENT_VAR("DAHDI_INIT_DIR=%s", initdir);	\
+		DAHDI_ADD_UEVENT_VAR("DAHDI_TOOLS_ROOTDIR=%s", tools_rootdir); \
+		DAHDI_ADD_UEVENT_VAR("DAHDI_INIT_DIR=%s/%s", tools_rootdir,    \
+				initdir);	\
 		DAHDI_ADD_UEVENT_VAR("SPAN_NUM=%d", span->spanno);	\
 		DAHDI_ADD_UEVENT_VAR("SPAN_NAME=%s", span->name);	\
 	} while (0)
@@ -198,8 +117,6 @@ static int span_uevent(struct device *dev, struct kobj_uevent_env *kenv)
 
 #endif
 
-#endif	/* OLD_HOTPLUG_SUPPORT */
-
 #define span_attr(field, format_string)				\
 static BUS_ATTR_READER(field##_show, dev, buf)			\
 {								\
@@ -211,10 +128,17 @@ static BUS_ATTR_READER(field##_show, dev, buf)			\
 
 span_attr(name, "%s\n");
 span_attr(desc, "%s\n");
-span_attr(spantype, "%s\n");
 span_attr(alarms, "0x%x\n");
 span_attr(lbo, "%d\n");
 span_attr(syncsrc, "%d\n");
+
+static BUS_ATTR_READER(spantype_show, dev, buf)
+{
+	struct dahdi_span *span;
+
+	span = dev_to_span(dev);
+	return sprintf(buf, "%s\n", dahdi_spantype2str(span->spantype));
+}
 
 static BUS_ATTR_READER(local_spanno_show, dev, buf)
 {
@@ -245,6 +169,8 @@ static BUS_ATTR_READER(basechan_show, dev, buf)
 	struct dahdi_span *span;
 
 	span = dev_to_span(dev);
+	if (!span->channels)
+		return -ENODEV;
 	return sprintf(buf, "%d\n", span->chans[0]->channo);
 }
 
@@ -254,6 +180,38 @@ static BUS_ATTR_READER(channels_show, dev, buf)
 
 	span = dev_to_span(dev);
 	return sprintf(buf, "%d\n", span->channels);
+}
+
+static BUS_ATTR_READER(lineconfig_show, dev, buf)
+{
+	struct dahdi_span *span;
+	int len = 0;
+
+	span = dev_to_span(dev);
+	len += lineconfig_str(span->lineconfig, buf, 20);
+	len += sprintf(buf + len, "\n");
+	return len;
+}
+
+static BUS_ATTR_READER(linecompat_show, dev, buf)
+{
+	struct dahdi_span *span;
+	int bit;
+	int len = 0;
+
+	span = dev_to_span(dev);
+	for (bit = 4; bit <= 12; bit++) {
+		if (span->linecompat & (1 << bit)) {
+			const char *name = dahdi_lineconfig_bit_name(bit);
+			if (name)
+				len += sprintf(buf + len, "%s ", name);
+		}
+	}
+	/* chomp */
+	while (len > 0 && isspace(buf[len - 1]))
+		buf[--len] = '\0';
+	len += sprintf(buf + len, "\n");
+	return len;
 }
 
 static struct device_attribute span_dev_attrs[] = {
@@ -268,23 +226,56 @@ static struct device_attribute span_dev_attrs[] = {
 	__ATTR_RO(is_sync_master),
 	__ATTR_RO(basechan),
 	__ATTR_RO(channels),
+	__ATTR_RO(lineconfig),
+	__ATTR_RO(linecompat),
 	__ATTR_NULL,
 };
 
+static ssize_t master_span_show(struct device_driver *driver, char *buf)
+{
+	struct dahdi_span *s = get_master_span();
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", (s) ? s->spanno : 0);
+}
+
+static ssize_t master_span_store(struct device_driver *driver, const char *buf,
+			  size_t count)
+{
+	int spanno;
+
+	if (sscanf(buf, "%d", &spanno) != 1) {
+		module_printk(KERN_ERR, "non-numeric input '%s'\n", buf);
+		return -EINVAL;
+	}
+	set_master_span(spanno);
+	return count;
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
 static struct driver_attribute dahdi_attrs[] = {
+	__ATTR(master_span, S_IRUGO | S_IWUSR, master_span_show,
+			master_span_store),
 	__ATTR_NULL,
 };
+#else
+static DRIVER_ATTR_RW(master_span);
+static struct attribute *dahdi_attrs[] = {
+	&driver_attr_master_span.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(dahdi);
+#endif
 
 static struct bus_type spans_bus_type = {
 	.name           = "dahdi_spans",
 	.match          = span_match,
-#ifdef OLD_HOTPLUG_SUPPORT
-	.hotplug	= span_hotplug,
-#else
 	.uevent         = span_uevent,
-#endif
 	.dev_attrs	= span_dev_attrs,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
 	.drv_attrs	= dahdi_attrs,
+#else
+	.drv_groups 	= dahdi_groups,
+#endif
 };
 
 static int span_probe(struct device *dev)
@@ -310,9 +301,7 @@ static struct device_driver dahdi_driver = {
 	.bus		= &spans_bus_type,
 	.probe		= span_probe,
 	.remove		= span_remove,
-#ifndef OLD_HOTPLUG_SUPPORT
 	.owner		= THIS_MODULE
-#endif
 };
 
 static void span_uevent_send(struct dahdi_span *span, enum kobject_action act)
@@ -322,58 +311,13 @@ static void span_uevent_send(struct dahdi_span *span, enum kobject_action act)
 	kobj = &span->span_device->kobj;
 	span_dbg(DEVICES, span, "SYFS dev_name=%s action=%d\n",
 		dev_name(span->span_device), act);
-
-#if defined(OLD_HOTPLUG_SUPPORT_269)
-	{
-		/* Copy from new kernels lib/kobject_uevent.c */
-		static const char *const str[] = {
-			[KOBJ_ADD]	"add",
-			[KOBJ_REMOVE]	"remove",
-			[KOBJ_CHANGE]	"change",
-			[KOBJ_MOUNT]	"mount",
-			[KOBJ_UMOUNT]	"umount",
-			[KOBJ_OFFLINE]	"offline",
-			[KOBJ_ONLINE]	"online"
-		};
-		kobject_hotplug(str[act], kobj);
-	}
-#elif defined(OLD_HOTPLUG_SUPPORT)
-	kobject_hotplug(kobj, act);
-#else
 	kobject_uevent(kobj, act);
-#endif
 }
 
 static void span_release(struct device *dev)
 {
 	dahdi_dbg(DEVICES, "%s: %s\n", __func__, dev_name(dev));
 }
-
-int dahdi_register_chardev(struct dahdi_chardev *dev)
-{
-	static const char *DAHDI_STRING = "dahdi!";
-	char *udevname;
-
-	udevname = kzalloc(strlen(dev->name) + sizeof(DAHDI_STRING) + 1,
-			   GFP_KERNEL);
-	if (!udevname)
-		return -ENOMEM;
-
-	strcpy(udevname, DAHDI_STRING);
-	strcat(udevname, dev->name);
-	CLASS_DEV_CREATE(dahdi_class, MKDEV(DAHDI_MAJOR, dev->minor), NULL, udevname);
-	kfree(udevname);
-	return 0;
-}
-EXPORT_SYMBOL(dahdi_register_chardev);
-
-int dahdi_unregister_chardev(struct dahdi_chardev *dev)
-{
-	CLASS_DEV_DESTROY(dahdi_class, MKDEV(DAHDI_MAJOR, dev->minor));
-
-	return 0;
-}
-EXPORT_SYMBOL(dahdi_unregister_chardev);
 
 void span_sysfs_remove(struct dahdi_span *span)
 {
@@ -386,15 +330,8 @@ void span_sysfs_remove(struct dahdi_span *span)
 	if (!span_device)
 		return;
 
-	for (x = 0; x < span->channels; x++) {
-		struct dahdi_chan *chan = span->chans[x];
-		if (!test_bit(DAHDI_FLAGBIT_DEVFILE, &chan->flags))
-			continue;
-
-		CLASS_DEV_DESTROY(dahdi_class,
-				MKDEV(DAHDI_MAJOR, chan->channo));
-		clear_bit(DAHDI_FLAGBIT_DEVFILE, &chan->flags);
-	}
+	for (x = 0; x < span->channels; x++)
+		chan_sysfs_remove(span->chans[x]);
 	if (!dev_get_drvdata(span_device))
 		return;
 
@@ -403,6 +340,7 @@ void span_sysfs_remove(struct dahdi_span *span)
 
 	get_device(span_device);
 	span_uevent_send(span, KOBJ_OFFLINE);
+	sysfs_remove_link(&span_device->kobj, "ddev");
 	device_unregister(span->span_device);
 	dev_set_drvdata(span_device, NULL);
 	span_device->parent = NULL;
@@ -443,30 +381,20 @@ int span_sysfs_create(struct dahdi_span *span)
 		span->span_device = NULL;
 		goto cleanup;
 	}
+	res = sysfs_create_link(&span_device->kobj, &span_device->parent->kobj,
+			"ddev");
+	if (res) {
+		span_err(span, "%s: sysfs_create_link failed: %d\n", __func__,
+				res);
+		kfree(span->span_device);
+		span->span_device = NULL;
+		goto cleanup;
+	}
 
 	for (x = 0; x < span->channels; x++) {
-		struct dahdi_chan *chan = span->chans[x];
-		char chan_name[32];
-		void *dummy;
-
-		if (chan->channo >= 250)
-			continue;
-		if (test_bit(DAHDI_FLAGBIT_DEVFILE, &chan->flags))
-			continue;
-
-		snprintf(chan_name, sizeof(chan_name), "dahdi!%d",
-				chan->channo);
-		dummy = (void *)CLASS_DEV_CREATE(dahdi_class,
-				MKDEV(DAHDI_MAJOR, chan->channo),
-				NULL, chan_name);
-		if (IS_ERR(dummy)) {
-			res = PTR_ERR(dummy);
-			chan_err(chan, "Failed creating sysfs device: %d\n",
-					res);
+		res = chan_sysfs_create(span->chans[x]);
+		if (res)
 			goto cleanup;
-		}
-
-		set_bit(DAHDI_FLAGBIT_DEVFILE, &chan->flags);
 	}
 	return 0;
 
@@ -475,58 +403,103 @@ cleanup:
 	return res;
 }
 
-#define MAKE_DAHDI_DEV(num, name) \
-	CLASS_DEV_CREATE(dahdi_class, MKDEV(DAHDI_MAJOR, num), NULL, name)
-#define DEL_DAHDI_DEV(num) \
-	CLASS_DEV_DESTROY(dahdi_class, MKDEV(DAHDI_MAJOR, num))
-
 /* Only used to flag that the device exists: */
 static struct {
-	unsigned int ctl:1;
-	unsigned int timer:1;
-	unsigned int channel:1;
-	unsigned int pseudo:1;
-	unsigned int sysfs_driver_registered:1;
-	unsigned int sysfs_spans_bus_type:1;
-	unsigned int dahdi_device_bus_registered:1;
-} dummy_dev;
+	unsigned int clean_dahdi_driver:1;
+	unsigned int clean_span_bus_type:1;
+	unsigned int clean_device_bus:1;
+	unsigned int clean_chardev:1;
+} should_cleanup;
 
 static inline struct dahdi_device *to_ddev(struct device *dev)
 {
 	return container_of(dev, struct dahdi_device, dev);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t dahdi_device_manufacturer_show(struct device *dev, char *buf)
+#define	DEVICE_VAR_BLOCK	\
+	do {		\
+		DAHDI_ADD_UEVENT_VAR("DAHDI_TOOLS_ROOTDIR=%s", tools_rootdir); \
+		DAHDI_ADD_UEVENT_VAR("DAHDI_INIT_DIR=%s/%s", tools_rootdir,    \
+				initdir);				\
+		DAHDI_ADD_UEVENT_VAR("DAHDI_DEVICE_HWID=%s",		\
+				ddev->hardware_id);			\
+		DAHDI_ADD_UEVENT_VAR("DAHDI_DEVICE_LOCATION=%s",	\
+				ddev->location);			\
+	} while (0)
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 24)
+#define DAHDI_ADD_UEVENT_VAR(fmt, val...)			\
+	do {							\
+		int err = add_uevent_var(envp, num_envp, &i,	\
+				buffer, buffer_size, &len,	\
+				fmt, val);			\
+		if (err)					\
+			return err;				\
+	} while (0)
+
+static int device_uevent(struct device *dev, char **envp, int num_envp,
+		char *buffer, int buffer_size)
+{
+	struct dahdi_device	*ddev;
+	int			i = 0;
+	int			len = 0;
+
+	if (!dev)
+		return -ENODEV;
+
+	ddev = to_ddev(dev);
+	if (!ddev)
+		return -ENODEV;
+
+	dahdi_dbg(GENERAL, "SYFS dev_name=%s\n", dev_name(dev));
+	DEVICE_VAR_BLOCK;
+	envp[i] = NULL;
+	return 0;
+}
+
 #else
+#define DAHDI_ADD_UEVENT_VAR(fmt, val...)			\
+	do {							\
+		int err = add_uevent_var(kenv, fmt, val);	\
+		if (err)					\
+			return err;				\
+	} while (0)
+
+static int device_uevent(struct device *dev, struct kobj_uevent_env *kenv)
+{
+	struct dahdi_device *ddev;
+
+	if (!dev)
+		return -ENODEV;
+	ddev = to_ddev(dev);
+	if (!ddev)
+		return -ENODEV;
+	dahdi_dbg(GENERAL, "SYFS dev_name=%s\n", dev_name(dev));
+	DEVICE_VAR_BLOCK;
+	return 0;
+}
+
+#endif
+
 static ssize_t
 dahdi_device_manufacturer_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 	return sprintf(buf, "%s\n", ddev->manufacturer);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t dahdi_device_type_show(struct device *dev, char *buf)
-#else
 static ssize_t
 dahdi_device_type_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 	return sprintf(buf, "%s\n", ddev->devicetype);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t dahdi_device_span_count_show(struct device *dev, char *buf)
-#else
 static ssize_t
 dahdi_device_span_count_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 	unsigned int count = 0;
@@ -538,13 +511,9 @@ dahdi_device_span_count_show(struct device *dev,
 	return sprintf(buf, "%d\n", count);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t dahdi_device_hardware_id_show(struct device *dev, char *buf)
-#else
 static ssize_t
 dahdi_device_hardware_id_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 
@@ -552,28 +521,28 @@ dahdi_device_hardware_id_show(struct device *dev,
 		(ddev->hardware_id) ? ddev->hardware_id : "");
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
 static ssize_t
-dahdi_device_auto_assign(struct device *dev, const char *buf, size_t count)
-#else
+dahdi_device_location_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct dahdi_device *ddev = to_ddev(dev);
+
+	return sprintf(buf, "%s\n",
+		(ddev->location) ? ddev->location : "");
+}
+
 static ssize_t
 dahdi_device_auto_assign(struct device *dev, struct device_attribute *attr,
 			 const char *buf, size_t count)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 	dahdi_assign_device_spans(ddev);
 	return count;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t
-dahdi_device_assign_span(struct device *dev, const char *buf, size_t count)
-#else
 static ssize_t
 dahdi_device_assign_span(struct device *dev, struct device_attribute *attr,
 			 const char *buf, size_t count)
-#endif
 {
 	int ret;
 	struct dahdi_span *span;
@@ -585,7 +554,7 @@ dahdi_device_assign_span(struct device *dev, struct device_attribute *attr,
 	ret = sscanf(buf, "%u:%u:%u", &local_span_number, &desired_spanno,
 		     &desired_basechanno);
 	if (ret != 3) {
-		dev_notice(dev, "badly formatted input (should be <num>:<num>:<num>)\n");
+		dev_notice(dev, "bad input (should be <num>:<num>:<num>)\n");
 		return -EINVAL;
 	}
 
@@ -601,18 +570,14 @@ dahdi_device_assign_span(struct device *dev, struct device_attribute *attr,
 			return (ret) ? ret : count;
 		}
 	}
-	dev_notice(dev, "no match for local span number %d\n", local_span_number);
+	dev_notice(dev, "no match for local span number %d\n",
+		local_span_number);
 	return -EINVAL;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t
-dahdi_device_unassign_span(struct device *dev, const char *buf, size_t count)
-#else
 static ssize_t
 dahdi_device_unassign_span(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
-#endif
 {
 	int ret;
 	unsigned int local_span_number;
@@ -638,13 +603,9 @@ dahdi_device_unassign_span(struct device *dev, struct device_attribute *attr,
 	return (ret < 0) ? ret : count;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t dahdi_spantype_show(struct device *dev, char *buf)
-#else
 static ssize_t
 dahdi_spantype_show(struct device *dev,
 		    struct device_attribute *attr, char *buf)
-#endif
 {
 	struct dahdi_device *ddev = to_ddev(dev);
 	int count = 0;
@@ -653,7 +614,8 @@ dahdi_spantype_show(struct device *dev,
 
 	/* TODO: Make sure this doesn't overflow the page. */
 	list_for_each_entry(span, &ddev->spans, device_node) {
-		count = sprintf(buf, "%d:%s\n", local_spanno(span), span->spantype);
+		count = sprintf(buf, "%d:%s\n",
+			local_spanno(span), dahdi_spantype2str(span->spantype));
 		buf += count;
 		total += count;
 	}
@@ -661,28 +623,41 @@ dahdi_spantype_show(struct device *dev,
 	return total;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 13)
-static ssize_t
-dahdi_spantype_store(struct device *dev, const char *buf, size_t count)
-#else
 static ssize_t
 dahdi_spantype_store(struct device *dev, struct device_attribute *attr,
 		     const char *buf, size_t count)
-#endif
 {
 	struct dahdi_device *const ddev = to_ddev(dev);
 	int ret;
-	struct dahdi_span *span;
+	struct dahdi_span *span = NULL;
+	struct dahdi_span *cur;
 	unsigned int local_span_number;
-	char desired_spantype[80];
+	char spantype_name[80];
+	enum spantypes spantype;
 
-	ret = sscanf(buf, "%u:%70s", &local_span_number, desired_spantype);
-	if (ret != 2)
+	ret = sscanf(buf, "%u:%70s", &local_span_number, spantype_name);
+	if (ret != 2) {
+		dev_err(&ddev->dev, "Wrong input format: '%s'\n", buf);
 		return -EINVAL;
+	}
+	spantype = dahdi_str2spantype(spantype_name);
+	if (spantype == SPANTYPE_INVALID) {
+		dev_err(&ddev->dev, "Invalid spantype: '%s'\n", buf);
+		return -EINVAL;
+	}
 
-	list_for_each_entry(span, &ddev->spans, device_node) {
-		if (local_spanno(span) == local_span_number)
+	list_for_each_entry(cur, &ddev->spans, device_node) {
+		if (local_spanno(cur) == local_span_number) {
+			span = cur;
 			break;
+		}
+	}
+
+	if (!span || (local_spanno(span) != local_span_number)) {
+		module_printk(KERN_WARNING,
+				"%d is not a valid local span number "
+				"for this device.\n", local_span_number);
+		return -EINVAL;
 	}
 
 	if (test_bit(DAHDI_FLAGBIT_REGISTERED, &span->flags)) {
@@ -691,11 +666,6 @@ dahdi_spantype_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 	}
 
-	if (local_spanno(span) != local_span_number) {
-		module_printk(KERN_WARNING, "%d is not a valid local span number "
-			      "for this device.\n", local_span_number);
-		return -EINVAL;
-	}
 
 	if (!span->ops->set_spantype) {
 		module_printk(KERN_WARNING, "Span %s does not support "
@@ -703,8 +673,21 @@ dahdi_spantype_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 	}
 
-	ret = span->ops->set_spantype(span, &desired_spantype[0]);
+	ret = span->ops->set_spantype(span, spantype);
 	return (ret < 0) ? ret : count;
+}
+
+static ssize_t
+dahdi_registration_time_show(struct device *dev,
+		    struct device_attribute *attr, char *buf)
+{
+	struct dahdi_device *ddev = to_ddev(dev);
+	int count = 0;
+
+	count += sprintf(buf, "%010ld.%09ld\n",
+		ddev->registration_time.tv_sec,
+		ddev->registration_time.tv_nsec);
+	return count;
 }
 
 static struct device_attribute dahdi_device_attrs[] = {
@@ -712,62 +695,46 @@ static struct device_attribute dahdi_device_attrs[] = {
 	__ATTR(type, S_IRUGO, dahdi_device_type_show, NULL),
 	__ATTR(span_count, S_IRUGO, dahdi_device_span_count_show, NULL),
 	__ATTR(hardware_id, S_IRUGO, dahdi_device_hardware_id_show, NULL),
+	__ATTR(location, S_IRUGO, dahdi_device_location_show, NULL),
 	__ATTR(auto_assign, S_IWUSR, NULL, dahdi_device_auto_assign),
 	__ATTR(assign_span, S_IWUSR, NULL, dahdi_device_assign_span),
 	__ATTR(unassign_span, S_IWUSR, NULL, dahdi_device_unassign_span),
 	__ATTR(spantype, S_IWUSR | S_IRUGO, dahdi_spantype_show,
 	       dahdi_spantype_store),
+	__ATTR(registration_time, S_IRUGO, dahdi_registration_time_show, NULL),
 	__ATTR_NULL,
 };
 
 static struct bus_type dahdi_device_bus = {
 	.name = "dahdi_devices",
+	.uevent         = device_uevent,
 	.dev_attrs = dahdi_device_attrs,
 };
 
-void dahdi_sysfs_exit(void)
+static void dahdi_sysfs_cleanup(void)
 {
 	dahdi_dbg(DEVICES, "SYSFS\n");
-	if (dummy_dev.pseudo) {
-		dahdi_dbg(DEVICES, "Removing /dev/dahdi/pseudo:\n");
-		DEL_DAHDI_DEV(DAHDI_PSEUDO);
-		dummy_dev.pseudo = 0;
-	}
-	if (dummy_dev.channel) {
-		dahdi_dbg(DEVICES, "Removing /dev/dahdi/channel:\n");
-		DEL_DAHDI_DEV(DAHDI_CHANNEL);
-		dummy_dev.channel = 0;
-	}
-	if (dummy_dev.timer) {
-		dahdi_dbg(DEVICES, "Removing /dev/dahdi/timer:\n");
-		DEL_DAHDI_DEV(DAHDI_TIMER);
-		dummy_dev.timer = 0;
-	}
-	if (dummy_dev.ctl) {
-		dahdi_dbg(DEVICES, "Removing /dev/dahdi/ctl:\n");
-		DEL_DAHDI_DEV(DAHDI_CTL);
-		dummy_dev.ctl = 0;
-	}
-	if (dahdi_class) {
-		dahdi_dbg(DEVICES, "Destroying DAHDI class:\n");
-		class_destroy(dahdi_class);
-		dahdi_class = NULL;
-	}
-	if (dummy_dev.sysfs_driver_registered) {
+	if (should_cleanup.clean_dahdi_driver) {
 		dahdi_dbg(DEVICES, "Unregister driver\n");
 		driver_unregister(&dahdi_driver);
-		dummy_dev.sysfs_driver_registered = 0;
+		should_cleanup.clean_dahdi_driver = 0;
 	}
-	if (dummy_dev.sysfs_spans_bus_type) {
+	if (should_cleanup.clean_span_bus_type) {
 		dahdi_dbg(DEVICES, "Unregister span bus type\n");
 		bus_unregister(&spans_bus_type);
-		dummy_dev.sysfs_spans_bus_type = 0;
+		should_cleanup.clean_span_bus_type = 0;
 	}
-	unregister_chrdev(DAHDI_MAJOR, "dahdi");
+	dahdi_sysfs_chan_exit();
+	if (should_cleanup.clean_chardev) {
+		dahdi_dbg(DEVICES, "Unregister character device\n");
+		unregister_chrdev(DAHDI_MAJOR, "dahdi");
+		should_cleanup.clean_chardev = 0;
+	}
 
-	if (dummy_dev.dahdi_device_bus_registered) {
+	if (should_cleanup.clean_device_bus) {
+		dahdi_dbg(DEVICES, "Unregister DAHDI device bus\n");
 		bus_unregister(&dahdi_device_bus);
-		dummy_dev.dahdi_device_bus_registered = 0;
+		should_cleanup.clean_device_bus = 0;
 	}
 }
 
@@ -819,79 +786,67 @@ void dahdi_sysfs_unregister_device(struct dahdi_device *ddev)
 int __init dahdi_sysfs_init(const struct file_operations *dahdi_fops)
 {
 	int res = 0;
-	void *dev;
+
+	dahdi_dbg(DEVICES, "Registering DAHDI device bus\n");
+
+	/* Handle dahdi-tools paths (for udev environment) */
+	if (tools_rootdir && initdir) {
+		dahdi_err("Cannot use tools-rootdir and initdir parameters simultaneously\n");
+		return -EINVAL;
+	}
+	if (initdir)
+		pr_notice("dahdi: initdir is depracated -- prefer using \"tools_rootdir\" parameter\n");
+	else
+		initdir = "/usr/share/dahdi";
+	if (!tools_rootdir)
+		tools_rootdir = "";
 
 	res = bus_register(&dahdi_device_bus);
 	if (res)
 		return res;
+	should_cleanup.clean_device_bus = 1;
 
-	dummy_dev.dahdi_device_bus_registered = 1;
-
+	dahdi_dbg(DEVICES,
+		"Registering character device (major=%d)\n", DAHDI_MAJOR);
 	res = register_chrdev(DAHDI_MAJOR, "dahdi", dahdi_fops);
 	if (res) {
-		module_printk(KERN_ERR, "Unable to register DAHDI character device handler on %d\n", DAHDI_MAJOR);
+		module_printk(KERN_ERR,
+			"Unable to register DAHDI character device "
+			"handler on %d\n", DAHDI_MAJOR);
 		return res;
 	}
-	module_printk(KERN_INFO, "Telephony Interface Registered on major %d\n",
-			DAHDI_MAJOR);
-	module_printk(KERN_INFO, "Version: %s\n", dahdi_version);
+	should_cleanup.clean_chardev = 1;
 
-	dahdi_class = class_create(THIS_MODULE, "dahdi");
-	if (!dahdi_class) {
-		res = -EEXIST;
+	res = dahdi_sysfs_chan_init(dahdi_fops);
+	if (res)
 		goto cleanup;
-	}
 
-	dahdi_dbg(DEVICES, "Creating /dev/dahdi/timer:\n");
-	dev = MAKE_DAHDI_DEV(DAHDI_TIMER, "dahdi!timer");
-	if (IS_ERR(dev)) {
-		res = PTR_ERR(dev);
-		goto cleanup;
-	}
-	dummy_dev.timer = 1;
-
-	dahdi_dbg(DEVICES, "Creating /dev/dahdi/channel:\n");
-	dev = MAKE_DAHDI_DEV(DAHDI_CHANNEL, "dahdi!channel");
-	if (IS_ERR(dev)) {
-		res = PTR_ERR(dev);
-		goto cleanup;
-	}
-	dummy_dev.channel = 1;
-
-	dahdi_dbg(DEVICES, "Creating /dev/dahdi/pseudo:\n");
-	dev = MAKE_DAHDI_DEV(DAHDI_PSEUDO, "dahdi!pseudo");
-	if (IS_ERR(dev)) {
-		res = PTR_ERR(dev);
-		goto cleanup;
-	}
-	dummy_dev.pseudo = 1;
-
-	dahdi_dbg(DEVICES, "Creating /dev/dahdi/ctl:\n");
-	dev = MAKE_DAHDI_DEV(DAHDI_CTL, "dahdi!ctl");
-	if (IS_ERR(dev)) {
-		res = PTR_ERR(dev);
-		goto cleanup;
-	}
-	dummy_dev.ctl = 1;
 	res = bus_register(&spans_bus_type);
-	if (res != 0) {
+	if (res) {
 		dahdi_err("%s: bus_register(%s) failed. Error number %d",
 			__func__, spans_bus_type.name, res);
 		goto cleanup;
 	}
-	dummy_dev.sysfs_spans_bus_type = 1;
+	should_cleanup.clean_span_bus_type = 1;
+
 	res = driver_register(&dahdi_driver);
-	if (res < 0) {
+	if (res) {
 		dahdi_err("%s: driver_register(%s) failed. Error number %d",
 			__func__, dahdi_driver.name, res);
 		goto cleanup;
 	}
-	dummy_dev.sysfs_driver_registered = 1;
+	should_cleanup.clean_dahdi_driver = 1;
 
+	module_printk(KERN_INFO, "Telephony Interface Registered on major %d\n",
+			DAHDI_MAJOR);
 	return 0;
 
 cleanup:
-	dahdi_sysfs_exit();
+	dahdi_sysfs_cleanup();
 	return res;
 }
 
+void dahdi_sysfs_exit(void)
+{
+	dahdi_sysfs_cleanup();
+}

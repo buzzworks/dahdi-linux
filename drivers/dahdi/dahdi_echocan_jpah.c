@@ -7,7 +7,7 @@
  * This "echo can" will completely hose your audio.
  * Don't use it unless you're absolutely sure you know what you're doing.
  *
- * Copyright (C) 2007-2008, Digium, Inc.
+ * Copyright (C) 2007-2012, Digium, Inc.
  *
  * All rights reserved.
  *
@@ -37,9 +37,6 @@
 #include <dahdi/kernel.h>
 
 static int debug;
-
-#define module_printk(level, fmt, args...) printk(level "%s: " fmt, THIS_MODULE->name, ## args)
-#define debug_printk(level, fmt, args...) if (debug >= level) printk("%s (%s): " fmt, THIS_MODULE->name, __FUNCTION__, ## args)
 
 static int echo_can_create(struct dahdi_chan *chan, struct dahdi_echocanparams *ecp,
 			   struct dahdi_echocanparam *p, struct dahdi_echocan_state **ec);

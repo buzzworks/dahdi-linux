@@ -3,7 +3,7 @@
  *
  * Written by Mark Spencer <markster@digium.com>
  *
- * Copyright (C) 2001-2010, Digium, Inc.
+ * Copyright (C) 2001-2012, Digium, Inc.
  *
  * All rights reserved.
  *
@@ -88,6 +88,8 @@ static int txerrors;
 static struct tasklet_struct dahdi_dynamic_tlet;
 
 static void dahdi_dynamic_tasklet(unsigned long data);
+#else
+static struct tasklet_struct dahdi_dynamic_flush_tlet;
 #endif
 
 static DEFINE_MUTEX(dspan_mutex);
@@ -199,7 +201,9 @@ static void dahdi_dynamic_sendmessage(struct dahdi_dynamic *d)
 static void __dahdi_dynamic_run(void)
 {
 	struct dahdi_dynamic *d;
+#ifdef ENABLE_TASKLETS
 	struct dahdi_dynamic_driver *drv;
+#endif
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(d, &dspan_list, list) {
@@ -208,12 +212,25 @@ static void __dahdi_dynamic_run(void)
 		dahdi_dynamic_sendmessage(d);
 	}
 
+#ifdef ENABLE_TASKLETS
 	list_for_each_entry_rcu(drv, &driver_list, list) {
 		/* Flush any traffic still pending in the driver */
 		if (drv->flush) {
 			drv->flush();
 		}
 	}
+#else
+	/* If tasklets are not enabled, the above section will be called in
+	 * interrupt context and the flushing of each driver will be called in a
+	 * separate tasklet that only handles that. This is necessary since some
+	 * of the dynamic spans need to call functions that require interrupts
+	 * to be enabled but dahdi_transmit / ...sendmessage needs to be called
+	 * each time the masterspan is processed which happens with interrupts
+	 * disabled.
+	 *
+	 */
+	tasklet_hi_schedule(&dahdi_dynamic_flush_tlet);
+#endif
 	rcu_read_unlock();
 }
 
@@ -396,12 +413,7 @@ static void dahdi_dynamic_release(struct kref *kref)
 
 static inline int dynamic_put(struct dahdi_dynamic *d)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 12)
-	kref_put(&d->kref, dahdi_dynamic_release);
-	return 1;
-#else
 	return kref_put(&d->kref, dahdi_dynamic_release);
-#endif
 }
 
 static inline void dynamic_get(struct dahdi_dynamic *d)
@@ -620,6 +632,10 @@ static int _create_dynamic(struct dahdi_dynamic_span *dds)
 	d->span.deflaw = DAHDI_LAW_MULAW;
 	d->span.flags |= DAHDI_FLAG_RBS;
 	d->span.chans = d->chans;
+	d->span.spantype = SPANTYPE_DIGITAL_DYNAMIC; 
+	d->span.linecompat = DAHDI_CONFIG_D4 | DAHDI_CONFIG_ESF	| 
+		DAHDI_CONFIG_AMI | DAHDI_CONFIG_B8ZS | DAHDI_CONFIG_CCS |
+		DAHDI_CONFIG_HDB3 | DAHDI_CONFIG_CRC4 | DAHDI_CONFIG_NOTOPEN;
 	d->span.ops = &dynamic_ops;
 	for (x = 0; x < d->span.channels; x++) {
 		sprintf(d->chans[x]->name, "DYN/%s/%s/%d",
@@ -712,6 +728,20 @@ static void dahdi_dynamic_tasklet(unsigned long data)
 		__dahdi_dynamic_run();
 	}
 	taskletpending = 0;
+}
+#else
+static void dahdi_dynamic_flush_tasklet(unsigned long data)
+{
+	struct dahdi_dynamic_driver *drv;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(drv, &driver_list, list) {
+		/* Flush any traffic still pending in the driver */
+		if (drv->flush) {
+			drv->flush();
+		}
+	}
+	rcu_read_unlock();
 }
 #endif
 
@@ -845,6 +875,8 @@ static int dahdi_dynamic_init(void)
 	mod_timer(&alarmcheck, jiffies + 1 * HZ);
 #ifdef ENABLE_TASKLETS
 	tasklet_init(&dahdi_dynamic_tlet, dahdi_dynamic_tasklet, 0);
+#else
+	tasklet_init(&dahdi_dynamic_flush_tlet, dahdi_dynamic_flush_tasklet, 0);
 #endif
 	dahdi_set_dynamic_ops(&dahdi_dynamic_ops);
 
@@ -861,6 +893,9 @@ static void dahdi_dynamic_cleanup(void)
 		tasklet_disable(&dahdi_dynamic_tlet);
 		tasklet_kill(&dahdi_dynamic_tlet);
 	}
+#else
+	tasklet_disable(&dahdi_dynamic_flush_tlet);
+	tasklet_kill(&dahdi_dynamic_flush_tlet);
 #endif
 	del_timer_sync(&alarmcheck);
 	/* Must call again in case it was running before and rescheduled

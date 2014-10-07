@@ -6,7 +6,7 @@
  * written by Jim Dixon <jim@lambdatel.com>.
  *
  * Copyright (C) 2001 Jim Dixon / Zapata Telephony.
- * Copyright (C) 2001 - 2010 Digium, Inc.
+ * Copyright (C) 2001 - 2012 Digium, Inc.
  *
  * All rights reserved.
  *
@@ -38,11 +38,9 @@
 
 #include <dahdi/dahdi_config.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
-#include <linux/config.h>
-#endif
 #include <linux/fs.h>
 #include <linux/device.h>
+#include <linux/cdev.h>
 #include <linux/module.h>
 #include <linux/ioctl.h>
 
@@ -60,11 +58,7 @@
 
 #include <linux/poll.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,10)
 #define dahdi_pci_module pci_register_driver
-#else
-#define dahdi_pci_module pci_module_init
-#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,19)
 #define DAHDI_IRQ_HANDLER(a) static irqreturn_t a(int irq, void *dev_id)
@@ -82,22 +76,9 @@
 #define HAVE_NET_DEVICE_OPS
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
 #define DAHDI_IRQ_SHARED IRQF_SHARED
 #define DAHDI_IRQ_DISABLED IRQF_DISABLED
 #define DAHDI_IRQ_SHARED_DISABLED IRQF_SHARED | IRQF_DISABLED
-#else
-#define DAHDI_IRQ_SHARED SA_SHIRQ
-#define DAHDI_IRQ_DISABLED SA_INTERRUPT
-#define DAHDI_IRQ_SHARED_DISABLED SA_SHIRQ | SA_INTERRUPT
-#endif
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,16)
-#ifndef dev_notice
-#define dev_notice(dev, format, arg...)         \
-        dev_printk(KERN_NOTICE , dev , format , ## arg)
-#endif
-#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 26)
 #  ifdef RHEL_RELEASE_VERSION
@@ -135,7 +116,7 @@
 #define DAHDI_MIN_CHUNKSIZE	 DAHDI_CHUNKSIZE
 #define DAHDI_DEFAULT_CHUNKSIZE	 DAHDI_CHUNKSIZE
 #define DAHDI_MAX_CHUNKSIZE 	 DAHDI_CHUNKSIZE
-#define DAHDI_CB_SIZE		 2
+#define DAHDI_CB_SIZE		 (1 << 3)
 
 /* DAHDI operates at 8Khz by default */
 #define DAHDI_MS_TO_SAMPLES(ms) ((ms) * 8)
@@ -444,6 +425,7 @@ struct dahdi_chan {
 	int lastnumbufs;
 #endif
 	spinlock_t lock;
+	struct mutex mutex;
 	char name[40];
 	/* Specified by DAHDI */
 	/*! \brief DAHDI channel number */
@@ -519,10 +501,7 @@ struct dahdi_chan {
 	
 	int		numbufs;			/*!< How many buffers in channel */
 	int		txbufpolicy;			/*!< Buffer policy */
-	int		rxbufpolicy;			/*!< Buffer policy */
 	int		txdisable;				/*!< Disable transmitter */
-	int 	rxdisable;				/*!< Disable receiver */
-	
 	
 	/* Tone zone stuff */
 	struct dahdi_zone *curzone;		/*!< Zone for selecting tones */
@@ -567,7 +546,6 @@ struct dahdi_chan {
 
 	short	getlin[DAHDI_MAX_CHUNKSIZE];			/*!< Last transmitted samples */
 	unsigned char getraw[DAHDI_MAX_CHUNKSIZE];		/*!< Last received raw data */
-	short	getlin_lastchunk[DAHDI_MAX_CHUNKSIZE];	/*!< Last transmitted samples from last chunk */
 	short	putlin[DAHDI_MAX_CHUNKSIZE];			/*!< Last received samples */
 	unsigned char putraw[DAHDI_MAX_CHUNKSIZE];		/*!< Last received raw data */
 	short	conflast[DAHDI_MAX_CHUNKSIZE];			/*!< Last conference sample -- base part of channel */
@@ -637,6 +615,8 @@ struct dahdi_chan {
 #else
 	unsigned char *lin2x;
 #endif
+	struct device chan_device;	/*!< Kernel object for this chan */
+#define dev_to_chan(dev)    container_of(dev, struct dahdi_chan, chan_device)
 };
 
 #ifdef CONFIG_DAHDI_NET
@@ -770,15 +750,16 @@ static inline int dahdi_have_netdev(const struct dahdi_chan *chan) { return 0; }
 #endif
 
 struct dahdi_count {
-	__u32 fe;		/*!< Framing error counter */
-	__u32 cv;		/*!< Coding violations counter */
-	__u32 bpv;		/*!< Bipolar Violation counter */
-	__u32 crc4;		/*!< CRC4 error counter */
-	__u32 ebit;		/*!< current E-bit error count */
-	__u32 fas;		/*!< current FAS error count */
-	__u32 be;		/*!< current bit error count */
-	__u32 prbs;		/*!< current PRBS detected pattern */
-	__u32 errsec;		/*!< errored seconds */
+	u32 fe;			/*!< Framing error counter */
+	u32 cv;			/*!< Coding violations counter */
+	u32 bpv;		/*!< Bipolar Violation counter */
+	u32 crc4;		/*!< CRC4 error counter */
+	u32 ebit;		/*!< current E-bit error count */
+	u32 fas;		/*!< current FAS error count */
+	u32 be;			/*!< current bit error count */
+	u32 prbs;		/*!< current PRBS detected pattern */
+	u32 errsec;		/*!< errored seconds */
+	u32 timingslips;	/*!< Clock slips */
 };
 
 /* map flagbits to flag masks */
@@ -819,6 +800,24 @@ struct dahdi_count {
 #define DAHDI_FLAG_BUFEVENTS	DAHDI_FLAG(BUFEVENTS)
 #define DAHDI_FLAG_TXUNDERRUN	DAHDI_FLAG(TXUNDERRUN)
 #define DAHDI_FLAG_RXOVERRUN	DAHDI_FLAG(RXOVERRUN)
+
+enum spantypes {
+	SPANTYPE_INVALID	= 0,
+	SPANTYPE_ANALOG_FXS,
+	SPANTYPE_ANALOG_FXO,
+	SPANTYPE_ANALOG_MIXED,
+	SPANTYPE_DIGITAL_E1,
+	SPANTYPE_DIGITAL_T1,
+	SPANTYPE_DIGITAL_J1,
+	SPANTYPE_DIGITAL_BRI_NT,
+	SPANTYPE_DIGITAL_BRI_TE,
+	SPANTYPE_DIGITAL_BRI_SOFT,
+	SPANTYPE_DIGITAL_DYNAMIC,
+};
+const char *dahdi_spantype2str(enum spantypes st);
+enum spantypes dahdi_str2spantype(const char *name);
+const char *dahdi_lineconfig_bit_name(int lineconfig_bit);
+ssize_t lineconfig_str(int lineconfig, char buf[], size_t size);
 
 struct file;
 
@@ -912,13 +911,13 @@ struct dahdi_span_ops {
 	/*! Opt: Provide the name of the echo canceller on a channel */
 	const char *(*echocan_name)(const struct dahdi_chan *chan);
 
-	/*! When using "pinned_spans", this function is called back when this
+	/*! When using "assigned spans", this function is called back when this
 	 * span has been assigned with the system. */
 	void (*assigned)(struct dahdi_span *span);
 
 	/*! Called when the spantype / linemode is changed before the span is
 	 * assigned a number. */
-	int (*set_spantype)(struct dahdi_span *span, const char *spantype);
+	int (*set_spantype)(struct dahdi_span *span, enum spantypes st);
 };
 
 /**
@@ -943,13 +942,14 @@ struct dahdi_device {
 	const char *devicetype;
 	struct device dev;
 	unsigned int irqmisses;
+	struct timespec registration_time;
 };
 
 struct dahdi_span {
 	spinlock_t lock;
 	char name[40];			/*!< Span name */
 	char desc[80];			/*!< Span description */
-	const char *spantype;		/*!< span type in text form */
+	enum spantypes spantype;	/*!< span type */
 	int deflaw;			/*!< Default law (DAHDI_MULAW or DAHDI_ALAW) */
 	int alarms;			/*!< Pending alarms on span */
 	unsigned long flags;
@@ -966,8 +966,6 @@ struct dahdi_span {
 
 	int maintstat;			/*!< Maintenance state */
 	int mainttimer;			/*!< Maintenance timer */
-
-	int timingslips;		/*!< Clock slips */
 
 	struct dahdi_chan **chans;	/*!< Member channel structures */
 
@@ -1008,6 +1006,8 @@ struct dahdi_transcoder_channel {
 };
 
 int dahdi_is_sync_master(const struct dahdi_span *span);
+struct dahdi_span *get_master_span(void);
+void set_master_span(int spanno);
 
 static inline int 
 dahdi_tc_is_built(struct dahdi_transcoder_channel *dtc) {
@@ -1242,6 +1242,12 @@ void dahdi_init_tone_state(struct dahdi_tone_state *ts, struct dahdi_tone *zt);
 /*! \brief Get a given MF tone struct, suitable for dahdi_tone_nextsample. */
 struct dahdi_tone *dahdi_mf_tone(const struct dahdi_chan *chan, char digit, int digitmode);
 
+/*! \brief Convert signalling bits to human readable string */
+const char *sigstr(int sig);
+
+/*! \brief Convert alarm bits to human readable string */
+int fill_alarm_string(char *buf, int count, int alarms);
+
 /* Echo cancel a receive and transmit chunk for a given channel.  This
    should be called by the low-level driver as close to the interface
    as possible.  ECHO CANCELLATION IS NO LONGER AUTOMATICALLY DONE
@@ -1275,6 +1281,8 @@ static inline void dahdi_ec_span(struct dahdi_span *span)
 }
 
 extern struct file_operations *dahdi_transcode_fops;
+
+int dahdi_get_auto_assign_spans(void);
 
 /* Don't use these directly -- they're not guaranteed to
    be there. */
@@ -1400,9 +1408,64 @@ static inline short dahdi_txtone_nextsample(struct dahdi_chan *ss)
 /*! Maximum audio mask */
 #define DAHDI_FORMAT_AUDIO_MASK	((1 << 16) - 1)
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0)
+#ifdef RHEL_RELEASE_VERSION
+#if RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(6, 5)
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+static inline void *PDE_DATA(const struct inode *inode)
+{
+	return PDE(inode)->data;
+}
+#endif
+#endif
+#else
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+static inline void *PDE_DATA(const struct inode *inode)
+{
+	return PDE(inode)->data;
+}
+#endif
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 31)
 #define KERN_CONT ""
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 27)
+
+#  ifndef RHEL_RELEASE_VERSION
+/* I'm not sure which 5.x release this was backported into. */
+static inline int try_wait_for_completion(struct completion *x)
+{
+	unsigned long flags;
+	int ret = 1;
+
+	spin_lock_irqsave(&x->wait.lock, flags);
+	if (!x->done)
+		ret = 0;
+	else
+		x->done--;
+	spin_unlock_irqrestore(&x->wait.lock, flags);
+	return ret;
+}
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 26)
+#ifdef CONFIG_PROC_FS
+#include <linux/proc_fs.h>
+static inline struct proc_dir_entry *proc_create_data(const char *name,
+					mode_t mode,
+					struct proc_dir_entry *parent,
+					const struct file_operations *proc_fops,
+					void *data)
+{
+	struct proc_dir_entry *pde = create_proc_entry(name, mode, parent);
+	if (!pde)
+		return NULL;
+	pde->proc_fops = proc_fops;
+	pde->data = data;
+	return pde;
+}
+#endif /* CONFIG_PROC_FS */
 #ifndef clamp
 #define clamp(x, low, high) min(max(low, x), high)
 #endif
@@ -1425,8 +1488,11 @@ void dahdi_pci_disable_link_state(struct pci_dev *pdev, int state);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 22)
 
-#ifndef __packed                                                                                         
-#define __packed  __attribute__((packed))                                                                
+#define list_first_entry(ptr, type, member) \
+	list_entry((ptr)->next, type, member)
+
+#ifndef __packed
+#define __packed  __attribute__((packed))
 #endif 
 
 #include <linux/ctype.h>
@@ -1450,14 +1516,13 @@ static inline int strcasecmp(const char *s1, const char *s2)
 	return c1 - c2;
 }
 #endif /* clamp_val */
+
 #endif /* 2.6.22 */
 #endif /* 2.6.25 */
 #endif /* 2.6.26 */
+#endif /* 2.6.27 */
 #endif /* 2.6.31 */
-
-#ifndef CONFIG_TRACING
-#define trace_printk printk
-#endif
+#endif /* 3.10.0 */
 
 #ifndef DEFINE_SPINLOCK
 #define DEFINE_SPINLOCK(x)      spinlock_t x = SPIN_LOCK_UNLOCKED
@@ -1503,6 +1568,10 @@ struct mutex {
 #define	DAHDI_PSEUDO	255
 
 /* prink-wrapper macros */
+
+#define module_printk(level, fmt, args...) \
+		printk(level "%s: " fmt, THIS_MODULE->name, ## args)
+
 #define	DAHDI_PRINTK(level, category, fmt, ...)	\
 	printk(KERN_ ## level "%s%s-%s: " fmt, #level, category, \
 			THIS_MODULE->name, ## __VA_ARGS__)
@@ -1510,7 +1579,7 @@ struct mutex {
 	printk(KERN_ ## level "%s%s-%s: span-%d: " fmt, #level,	\
 		category, THIS_MODULE->name, (span)->spanno, ## __VA_ARGS__)
 #define	chan_printk(level, category, chan, fmt, ...)	\
-	printk(KERN_ ## level "%s%s-%s: %d: " fmt, #level,	\
+	printk(KERN_ ## level "%s%s-%s: chan-%d: " fmt, #level,	\
 		category, THIS_MODULE->name, (chan)->channo, ## __VA_ARGS__)
 #define	dahdi_err(fmt, ...)	DAHDI_PRINTK(ERR, "", fmt, ## __VA_ARGS__)
 #define	span_info(span, fmt, ...)	span_printk(INFO, "", span, fmt, \
@@ -1523,6 +1592,10 @@ struct mutex {
 						## __VA_ARGS__)
 #define	chan_err(chan, fmt, ...)	chan_printk(ERR, "", chan, fmt, \
 						## __VA_ARGS__)
+
+#ifndef pr_fmt
+#define pr_fmt(fmt)             KBUILD_MODNAME ": " fmt
+#endif
 
 #ifndef pr_err
 #define pr_err(fmt, ...) \
@@ -1542,6 +1615,17 @@ struct mutex {
 #ifndef pr_info
 #define pr_info(fmt, ...) \
 	printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__)
+#endif
+
+/* If KBUILD_MODNAME is not defined in a compilation unit, then the dev_dbg
+ * macro will not work properly. */
+#ifndef KBUILD_MODNAME
+  #undef dev_dbg
+  #ifdef DEBUG
+    #define dev_dbg dev_info
+  #else
+    #define dev_dbg(...) do { } while (0)
+  #endif
 #endif
 
 /* The dbg_* ones use a magical variable 'debug' and the user should be
